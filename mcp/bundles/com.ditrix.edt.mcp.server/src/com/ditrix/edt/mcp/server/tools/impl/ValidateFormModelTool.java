@@ -59,7 +59,7 @@ public final class ValidateFormModelTool implements IMcpTool
     {
         return JsonSchemaBuilder.object()
             .booleanProperty("success", "Whether validation executed.", true) //$NON-NLS-1$ //$NON-NLS-2$
-            .booleanProperty("valid", "Whether the form has no structural findings.", true) //$NON-NLS-1$ //$NON-NLS-2$
+            .booleanProperty("valid", "Whether the form has no structural findings.") //$NON-NLS-1$ //$NON-NLS-2$
             .stringProperty("formFqn", "Normalized form FQN.") //$NON-NLS-1$ //$NON-NLS-2$
             .integerProperty("findingCount", "Number of structural findings.") //$NON-NLS-1$ //$NON-NLS-2$
             .objectArrayProperty("findings", "Findings as {code, severity, path, message}.") //$NON-NLS-1$ //$NON-NLS-2$

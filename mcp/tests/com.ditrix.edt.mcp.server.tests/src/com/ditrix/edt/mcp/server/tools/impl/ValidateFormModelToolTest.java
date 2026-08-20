@@ -15,6 +15,9 @@ import java.util.Map;
 import org.junit.Test;
 
 import com.ditrix.edt.mcp.server.tools.IMcpTool;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 
 /** Contract and pre-workbench validation tests for {@link ValidateFormModelTool}. */
 public class ValidateFormModelToolTest
@@ -36,5 +39,14 @@ public class ValidateFormModelToolTest
         String result = new ValidateFormModelTool().execute(Map.of(
             "projectName", "P", "formFqn", "Catalog.Products")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         assertTrue(result.contains("Invalid formFqn")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testOutputSchemaRequiresOnlyTheUniversalSuccessEnvelope()
+    {
+        JsonObject schema = JsonParser.parseString(new ValidateFormModelTool().getOutputSchema()).getAsJsonObject();
+        JsonArray required = schema.getAsJsonArray("required"); //$NON-NLS-1$
+        assertEquals(1, required.size());
+        assertEquals("success", required.get(0).getAsString()); //$NON-NLS-1$
     }
 }
