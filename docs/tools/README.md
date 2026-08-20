@@ -40,6 +40,7 @@ One page per tool: what it does, every parameter, and how it works. Generated fr
 | [`list_common_pictures`](list_common_pictures.md) | List a 1C configuration's CommonPicture objects and the variants each carries in its Picture.zip (DPI, theme, interface variant, template flag, glyph size, p… |
 | [`list_configurations`](list_configurations.md) | List EDT launch configurations (runtime client + Attach + other 1C types) with their running state. This is the discovery step before debug_launch / run_yaxu… |
 | [`list_subsystems`](list_subsystems.md) | List 1C subsystems of a configuration as a flat table (FQN, Synonym, Comment, InCommandInterface, content count, children count). Walks the whole tree by def… |
+| [`modify_dcs_settings`](modify_dcs_settings.md) | Author a DCS default/variant settings tree through EDT's native model: total fields, selection, filters, sorting, nested groups, charts, conditional appearan… |
 | [`modify_metadata`](modify_metadata.md) | Set properties of a metadata node - an object, a member, or a FORM member (item / attribute / command / handler) - addressed by a 1C full-name FQN, as proper… |
 | [`rename_metadata_object`](rename_metadata_object.md) | Rename a metadata object, one of its members, or a managed-form element (attribute / command / field / button / group / decoration / table / attribute column… |
 

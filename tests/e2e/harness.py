@@ -516,7 +516,8 @@ DEEP_MUTATION_TOOLS = frozenset({
 # the Java side and is missing here fails the suite. Hand-maintained membership silently rots -
 # apply_quick_fix landed on master mutating the model, and this set did not know about it.
 MODEL_MUTATION_TOOLS = frozenset({
-    "create_metadata", "modify_metadata", "write_module_source", "write_predefined_items",
+    "create_metadata", "modify_metadata", "modify_dcs_settings", "write_module_source",
+    "write_predefined_items",
     "apply_quick_fix", "build_external_objects",
     # Writers whose write happens OUTSIDE our code: both call LanguageTool through reflection, so
     # no marker in this repository's sources can reveal them. The ratchet pins them by name for

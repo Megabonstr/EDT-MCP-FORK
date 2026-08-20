@@ -3111,6 +3111,65 @@
       "openWorldHint": false,
       "readOnlyHint": false
     },
+    "description": "Author a DCS default/variant settings tree through EDT's native model: total fields, selection, filters, sorting, nested groups, charts, conditional appearance and user-setting exposure. Supports surgical mutation with normalized before/after read-back. Parameters and examples: get_tool_guide('modify_dcs_settings').",
+    "inputSchema": {
+      "properties": {
+        "ownerFqn": {
+          "description": "DCS owner FQN: Report, ExternalReport, or ExternalDataProcessor (required; external owners must already contain a DCS template).",
+          "type": "string"
+        },
+        "projectName": {
+          "description": "EDT project name (required).",
+          "type": "string"
+        },
+        "settings": {
+          "description": "Advanced settings specification (required). target='default' or target='variant' with variantName; omitted sections are preserved. See get_tool_guide for the full shape.",
+          "type": "object"
+        }
+      },
+      "required": [
+        "projectName",
+        "ownerFqn",
+        "settings"
+      ],
+      "type": "object"
+    },
+    "name": "modify_dcs_settings",
+    "outputSchema": {
+      "properties": {
+        "action": {
+          "description": "Applied action",
+          "type": "string"
+        },
+        "dcs": {
+          "description": "Applied counts plus settingsBefore/settingsAfter/changedSettingsPaths",
+          "type": "object"
+        },
+        "fqn": {
+          "description": "Normalized DCS owner FQN",
+          "type": "string"
+        },
+        "persisted": {
+          "description": "Whether EDT exported the owner and .dcs resource",
+          "type": "boolean"
+        },
+        "success": {
+          "description": "Whether the write succeeded",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false
+    },
     "description": "Set properties of any metadata node (object or member, including form items, attributes, commands, and handlers). Parameters and examples: get_tool_guide('modify_metadata').",
     "inputSchema": {
       "properties": {
@@ -3122,7 +3181,7 @@
           "type": "array"
         },
         "dcs": {
-          "description": "REPORT FQN only ('Report.<Name>'): the Data Composition Schema (СКД) content to author, instead of 'properties'. Authors the report's main DCS (creating it if the report has none yet). An object with: 'dataSources' [{name, type?}] (a data source, default type a local query source); 'dataSets' [{name, type:'query', query (the 1C query text, bilingual keywords), dataSource?, autoFillFields? (default true - EDT derives the fields from the query), fields? [{name?, dataPath, title?, role?}]}] a query data set; 'parameters' [{name, valueType?, title?, use?}] schema parameters. Valid only for a Report FQN; cannot be combined with 'properties' / 'content' / 'template' / a Role payload.",
+          "description": "DCS owner FQN ('Report.<Name>', 'ExternalReport.<Name>', or 'ExternalDataProcessor.<Name>'): the Data Composition Schema (СКД) content to author, instead of 'properties'. Authors the owner's DCS. A Report gets a main DCS template when absent; an external owner must already contain a DCS template. An object with: 'dataSources' [{name, type?}] (a data source, default type a local query source); 'dataSets' [{name, type:'query', query (the 1C query text, bilingual keywords), dataSource?, autoFillFields? (default true - EDT derives the fields from the query), fields? [{name?, dataPath, title?, role?}]}] a query data set; 'parameters' [{name, valueType?, title?, use?}] schema parameters. Cannot be combined with 'properties' / 'content' / 'template' / a Role payload.",
           "type": "object"
         },
         "fqn": {

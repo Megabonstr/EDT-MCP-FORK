@@ -88,6 +88,7 @@ import com.ditrix.edt.mcp.server.tools.impl.SetBranchInfobaseTool;
 import com.ditrix.edt.mcp.server.tools.impl.SetBreakpointTool;
 import com.ditrix.edt.mcp.server.tools.impl.SetVariableTool;
 import com.ditrix.edt.mcp.server.tools.impl.ModifyMetadataTool;
+import com.ditrix.edt.mcp.server.tools.impl.ModifyDcsSettingsTool;
 import com.ditrix.edt.mcp.server.tools.impl.StartProfilingTool;
 import com.ditrix.edt.mcp.server.tools.impl.StepTool;
 import com.ditrix.edt.mcp.server.tools.impl.StopProfilingTool;
@@ -229,6 +230,7 @@ public final class BuiltInToolRegistrar
         catalogue.add(new DeleteMetadataTool());
         catalogue.add(new CreateMetadataTool());
         catalogue.add(new ModifyMetadataTool());
+        catalogue.add(new ModifyDcsSettingsTool());
         catalogue.add(new AdoptMetadataObjectTool());
         catalogue.add(new ValidateXdtoPackageTool());
         catalogue.add(new ValidateFormModelTool());

@@ -45,6 +45,8 @@ import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.Document;
 import com._1c.g5.v8.dt.metadata.mdclass.EventSubscription;
 import com._1c.g5.v8.dt.metadata.mdclass.ExchangePlan;
+import com._1c.g5.v8.dt.metadata.mdclass.ExternalDataProcessor;
+import com._1c.g5.v8.dt.metadata.mdclass.ExternalReport;
 import com._1c.g5.v8.dt.metadata.mdclass.Language;
 import com._1c.g5.v8.dt.metadata.mdclass.MdClassPackage;
 import com._1c.g5.v8.dt.metadata.mdclass.MdObject;
@@ -354,14 +356,16 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
                 + "only for a SpreadsheetDocument template FQN; cannot be combined with 'properties' / " //$NON-NLS-1$
                 + "'content' / a Role payload.") //$NON-NLS-1$
             .objectProperty(KEY_DCS,
-                "REPORT FQN only ('Report.<Name>'): the Data Composition Schema (СКД) content to author, " //$NON-NLS-1$
-                + "instead of 'properties'. Authors the report's main DCS (creating it if the report has " //$NON-NLS-1$
-                + "none yet). An object with: 'dataSources' [{name, type?}] (a data source, default type " //$NON-NLS-1$
+                "DCS owner FQN ('Report.<Name>', 'ExternalReport.<Name>', or " //$NON-NLS-1$
+                + "'ExternalDataProcessor.<Name>'): the Data Composition Schema (СКД) content to author, " //$NON-NLS-1$
+                + "instead of 'properties'. Authors the owner's DCS. A Report gets a main DCS template " //$NON-NLS-1$
+                + "when absent; an external owner must already contain a DCS template. An object with: " //$NON-NLS-1$
+                + "'dataSources' [{name, type?}] (a data source, default type " //$NON-NLS-1$
                 + "a local query source); 'dataSets' [{name, type:'query', query (the 1C query text, " //$NON-NLS-1$
                 + "bilingual keywords), dataSource?, autoFillFields? (default true - EDT derives the " //$NON-NLS-1$
                 + "fields from the query), fields? [{name?, dataPath, title?, role?}]}] a query data set; " //$NON-NLS-1$
-                + "'parameters' [{name, valueType?, title?, use?}] schema parameters. Valid only for a " //$NON-NLS-1$
-                + "Report FQN; cannot be combined with 'properties' / 'content' / 'template' / a Role " //$NON-NLS-1$
+                + "'parameters' [{name, valueType?, title?, use?}] schema parameters. Cannot be combined " //$NON-NLS-1$
+                + "with 'properties' / 'content' / 'template' / a Role " //$NON-NLS-1$
                 + "payload.") //$NON-NLS-1$
             .booleanProperty("normalizeYo", //$NON-NLS-1$
                 "Normalize the Russian letter 'ё'->'е' / 'Ё'->'Е' in localized-string values (synonym / " //$NON-NLS-1$
@@ -601,11 +605,11 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         args.templateSpec = templateArg.spec;
         args.hasTemplatePayload = args.templateSpec != null;
 
-        // Report Data Composition Schema payload (dcs={dataSources/dataSets/parameters}): authored on a
-        // Report FQN. When present, 'properties' is optional (the DCS is authored through its own surface,
+        // Data Composition Schema payload (dcs={dataSources/dataSets/parameters}): authored on a supported
+        // DCS owner FQN. When present, 'properties' is optional (the DCS is authored through its own surface,
         // not the generic property bag) - mirrors the template payload precedent. A present-but-malformed
         // 'dcs' (not a JSON object) is an actionable error, not a silent drop: 'dcs' is the SOLE surface
-        // for authoring a report's schema.
+        // for authoring an owner's schema.
         DcsArg dcsArg = parseDcsArg(params);
         if (dcsArg.error != null)
         {
@@ -622,7 +626,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
                 + "set, e.g. [{name: 'comment', value: 'Goods'}]. For a Role FQN, provide 'rights', " //$NON-NLS-1$
                 + "'templates' or 'roleProperties' instead; for a CommonAttribute / ExchangePlan / " //$NON-NLS-1$
                 + "Catalog / Document / Subsystem FQN, provide 'content' instead; for a template FQN, " //$NON-NLS-1$
-                + "provide 'template' instead; for a Report FQN, provide 'dcs' instead.").toJson(); //$NON-NLS-1$
+                + "provide 'template' instead; for a DCS owner FQN, provide 'dcs' instead.").toJson(); //$NON-NLS-1$
             return args;
         }
 
@@ -656,7 +660,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         // success.
         if (args.hasDcsPayload)
         {
-            return dcsOnlyForReportFqnError(normFqn, "addresses a FORM member"); //$NON-NLS-1$
+            return dcsOnlyForOwnerFqnError(normFqn, "addresses a FORM member"); //$NON-NLS-1$
         }
         return dispatchFormMember(ctx, normFqn, formRef, args.properties, args.normReport,
             args.hasRolePayload, args.hasContentPayload);
@@ -684,7 +688,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         }
         if (args.hasDcsPayload)
         {
-            return dcsOnlyForReportFqnError(normFqn, "addresses a predefined item"); //$NON-NLS-1$
+            return dcsOnlyForOwnerFqnError(normFqn, "addresses a predefined item"); //$NON-NLS-1$
         }
         if (args.hasRolePayload || args.hasContentPayload)
         {
@@ -887,7 +891,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         // dropped.
         if (args.hasDcsPayload)
         {
-            return dcsOnlyForReportFqnError(normFqn, ERR_IS_A + subsystem.eClass().getName());
+            return dcsOnlyForOwnerFqnError(normFqn, ERR_IS_A + subsystem.eClass().getName());
         }
         return modifySubsystemContent(ctx, normFqn, subsystem, args.properties, args.content,
             args.hasRolePayload);
@@ -923,7 +927,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         }
         if (args.hasDcsPayload)
         {
-            return dcsOnlyForReportFqnError(normFqn, "addresses an XDTO package member"); //$NON-NLS-1$
+            return dcsOnlyForOwnerFqnError(normFqn, "addresses an XDTO package member"); //$NON-NLS-1$
         }
         String payloadError =
             xdtoMemberPayloadError(normFqn, args.hasRolePayload, args.hasContentPayload, args.properties);
@@ -1179,8 +1183,8 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
      */
     private String dispatchPayloads(ProjectContext ctx, String normFqn, MdObject target, ModifyArgs args)
     {
-        // A `dcs` payload on a Report FQN authors the report's Data Composition Schema; the same payload on
-        // a NON-Report FQN is refused. Dispatched BEFORE the template / role / content path so a dcs
+        // A `dcs` payload on a supported DCS owner FQN authors its Data Composition Schema; the same payload
+        // on any other FQN is refused. Dispatched BEFORE the template / role / content path so a dcs
         // payload combined with another payload is refused here (the dcsMixError guard) - never silently
         // dropped - and a dcs+template mix reports the dcs-centric error rather than the generic
         // template-not-valid one. Null means there is no dcs payload.
@@ -1225,8 +1229,8 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
     }
 
     /**
-     * Dispatches a {@code dcs} payload: a Report FQN carrying the payload goes to
-     * {@link #modifyDcsContent} (after the no-mixing guard); the same payload on a NON-Report FQN is
+     * Dispatches a {@code dcs} payload: a supported DCS owner FQN carrying the payload goes to
+     * {@link #modifyDcsContent} (after the no-mixing guard); the same payload on any other FQN is
      * refused. Returns {@code null} when there is NO dcs payload. Extracted verbatim from
      * {@link #executeOnUiThread}.
      */
@@ -1237,9 +1241,9 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         {
             return null;
         }
-        if (!(target instanceof Report))
+        if (!isDcsOwner(target))
         {
-            return dcsOnlyForReportFqnError(normFqn, ERR_IS_A + target.eClass().getName());
+            return dcsOnlyForOwnerFqnError(normFqn, ERR_IS_A + target.eClass().getName());
         }
         String mixError = dcsMixError(args.properties, args.content, args.hasRolePayload,
             args.hasTemplatePayload);
@@ -1252,7 +1256,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         // this the very hole issue #298 closes stayed open on this route. Checked HERE, before any
         // write, so a bad code fails the call with nothing applied.
         Set<String> titleLocales = new LinkedHashSet<>();
-        String localeError = dcsTitleLocaleError(ctx.config, args.dcsSpec, titleLocales);
+        String localeError = dcsTitleLocaleError(ctx.scope, args.dcsSpec, titleLocales);
         if (localeError != null)
         {
             return localeError;
@@ -1261,8 +1265,14 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         // configuration even translated into that language? The report's per-property missing list
         // has no meaning here (a payload writes many titles at once), but the prompt to ASK does.
         boolean localeUnused = titleLocales.stream()
-            .anyMatch(code -> MetadataLanguageUtils.isDeclaredButUnused(ctx.config, code));
-        return modifyDcsContent(ctx, normFqn, (Report)target, args.dcsSpec, localeUnused);
+            .anyMatch(code -> ctx.scope.isDeclaredButUnused(code));
+        return modifyDcsContent(ctx, normFqn, target, args.dcsSpec, localeUnused);
+    }
+
+    private static boolean isDcsOwner(MdObject target)
+    {
+        return target instanceof Report || target instanceof ExternalReport
+            || target instanceof ExternalDataProcessor;
     }
 
 
@@ -1281,14 +1291,14 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
      * @param used collects the canonical codes the payload's titles write under
      * @return a JSON error, or {@code null} when the payload's locales are acceptable
      */
-    private static String dcsTitleLocaleError(Configuration config, JsonObject dcsSpec,
+    private static String dcsTitleLocaleError(MetadataScope scope, JsonObject dcsSpec,
         Set<String> used)
     {
         if (dcsSpec == null)
         {
             return null;
         }
-        List<String> declared = MetadataLanguageUtils.declaredLanguageCodes(config);
+        List<String> declared = scope.declaredLanguageCodes();
         if (declared.isEmpty())
         {
             // No declared code makes EVERY code undeclared, so a localized title here would be
@@ -1306,7 +1316,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
                 + "'Language.<Name>' + modify_metadata 'languageCode'), then write the title.") //$NON-NLS-1$
                     .toJson();
         }
-        return normalizeDcsTitleLocales(config, declared, dcsSpec, used);
+        return normalizeDcsTitleLocales(declared, dcsSpec, used);
     }
 
     /**
@@ -1395,15 +1405,15 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
      * @param used collects the canonical codes the stored titles write under
      * @return a ready JSON error for the first undeclared code, or {@code null} when all are fine
      */
-    private static String normalizeDcsTitleLocales(Configuration config, List<String> declared,
-        JsonObject dcsSpec, Set<String> used)
+    private static String normalizeDcsTitleLocales(List<String> declared, JsonObject dcsSpec,
+        Set<String> used)
     {
-        String error = normalizeEntryTitles(config, declared, dcsSpec.get(KEY_DCS_PARAMETERS), used);
+        String error = normalizeEntryTitles(declared, dcsSpec.get(KEY_DCS_PARAMETERS), used);
         if (error != null)
         {
             return error;
         }
-        error = normalizeEntryTitles(config, declared, dcsSpec.get(KEY_DCS_CALCULATED_FIELDS), used);
+        error = normalizeEntryTitles(declared, dcsSpec.get(KEY_DCS_CALCULATED_FIELDS), used);
         if (error != null)
         {
             return error;
@@ -1419,7 +1429,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
             {
                 continue;
             }
-            error = normalizeEntryTitles(config, declared,
+            error = normalizeEntryTitles(declared,
                 dataSet.getAsJsonObject().get(KEY_DCS_FIELDS), used);
             if (error != null)
             {
@@ -1430,8 +1440,8 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
     }
 
     /** Validates the object-valued {@code title} of every entry in one array of writer entries. */
-    private static String normalizeEntryTitles(Configuration config, List<String> declared,
-        JsonElement entries, Set<String> used)
+    private static String normalizeEntryTitles(List<String> declared, JsonElement entries,
+        Set<String> used)
     {
         if (entries == null || !entries.isJsonArray())
         {
@@ -1450,7 +1460,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
                 // error to report - this guard only judges LANGUAGE keys.
                 continue;
             }
-            String error = canonicalizeTitleKeys(config, declared, title.getAsJsonObject(), used);
+            String error = canonicalizeTitleKeys(declared, title.getAsJsonObject(), used);
             if (error != null)
             {
                 return error;
@@ -1460,14 +1470,15 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
     }
 
     /** Validates and canonicalizes the keys of ONE {@code {code: text}} title object, in place. */
-    private static String canonicalizeTitleKeys(Configuration config, List<String> declared,
-        JsonObject title, Set<String> used)
+    private static String canonicalizeTitleKeys(List<String> declared, JsonObject title,
+        Set<String> used)
     {
         java.util.Map<String, JsonElement> rewritten = new java.util.LinkedHashMap<>();
         for (java.util.Map.Entry<String, JsonElement> entry : title.entrySet())
         {
             String code = entry.getKey();
-            String canonical = MetadataLanguageUtils.canonicalLanguageCode(config, code);
+            String canonical = declared.stream().filter(candidate -> candidate.equalsIgnoreCase(code))
+                .findFirst().orElse(null);
             if (canonical == null)
             {
                 return ToolResult.error("Unknown language '" + code + "' for a dcs title. This " //$NON-NLS-1$ //$NON-NLS-2$
@@ -2118,46 +2129,46 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         }
     }
 
-    // ===== Report Data Composition Schema (СКД / .dcs) authoring (#241) ==============================
+    // ===== Data Composition Schema (СКД / .dcs) authoring (#241) =====================================
     //
-    // A `dcs` payload on a Report FQN authors the report's main Data Composition Schema (data sets +
+    // A `dcs` payload on a supported owner FQN authors its Data Composition Schema (data sets +
     // query text + fields + schema parameters). The persistence is a near-clone of the #245 template
-    // machinery: a report's DCS content is a {@link DataCompositionSchema} stored in the report's DCS
+    // machinery: DCS content is a {@link DataCompositionSchema} stored in the owner's DCS
     // BasicTemplate's transient @ExternalProperty (BASIC_TEMPLATE__TEMPLATE) - the SAME slot a
     // SpreadsheetDocument template uses - so the fresh content is attached via attachTopObject and the
     // sibling .dcs resource is drained by the same dual force-export. The typed DCS write itself lives in
-    // {@link DcsWriter}; this tool owns the Report -> DCS-template resolution, the BM boundary and the
+    // {@link DcsWriter}; this tool owns owner -> DCS-template resolution, the BM boundary and the
     // force-export.
 
     /**
-     * Authors a Report's Data Composition Schema (the {@code dcs} payload) via {@link DcsWriter}. The
-     * report's DCS content lives in its main DCS {@link BasicTemplate} (templateType
+     * Authors a supported owner's Data Composition Schema (the {@code dcs} payload) via {@link DcsWriter}.
+     * A Report's DCS content lives in its main DCS {@link BasicTemplate} (templateType
      * {@link TemplateType#DATA_COMPOSITION_SCHEMA}); designer / older reports may have NO DCS at all, so
-     * the FIRST {@code dcs} write lazily materializes that template
-     * ({@link #findOrCreateDcsTemplate}) and registers it as the report's
-     * {@code mainDataCompositionSchema}. The content {@link DataCompositionSchema} is a transient
+     * the FIRST {@code dcs} write lazily materializes that template. ExternalReport and
+     * ExternalDataProcessor owners must already contain a DCS template. The content
+     * {@link DataCompositionSchema} is a transient
      * {@code @ExternalProperty} (its own {@code .dcs} resource), so a freshly-materialized one is attached
      * as a BM top object ({@link #resolveDcsContent}, mirroring
      * {@link #resolveSpreadsheetContent}) - else the commit fails "Failed to persist reference value".
      *
-     * <p>The write runs inside ONE {@link BmTransactions#write write} transaction on the Report re-fetched
+     * <p>The write runs inside ONE {@link BmTransactions#write write} transaction on the owner re-fetched
      * by its BM id (the #174 / #245 BM gotcha: capture {@code bmGetId()} up front, re-fetch inside the tx).
      * A validation failure throws a {@link TemplateWriteException} carrying a ready JSON error BEFORE the
-     * commit, so the tx rolls back with no partial mutation. After the commit the DCS template's TOP object
-     * (a report DCS template is INLINE in the report's {@code .mdo}, so its top is the Report itself) is
+     * commit, so the tx rolls back with no partial mutation. After the commit the DCS template's owner top
+     * object is
      * force-exported so the template registration reaches disk, and the DCS content's OWN resource FQN is
      * force-exported alongside so the sibling {@code .dcs} drains (the #245 dual force-export, guarding the
-     * #239-class silent-false-success). The mixing / non-Report-FQN guards run at the call site (see
-     * {@link #dcsMixError} / {@link #dcsOnlyForReportFqnError}), so this method is entered only for a Report
-     * FQN with a lone {@code dcs} payload.</p>
+     * #239-class silent-false-success). The mixing / wrong-owner-FQN guards run at the call site (see
+     * {@link #dcsMixError} / {@link #dcsOnlyForOwnerFqnError}), so this method is entered only for a
+     * supported DCS owner FQN with a lone {@code dcs} payload.</p>
      */
-    private String modifyDcsContent(ProjectContext ctx, String normFqn, Report report, // NOSONAR signature is inherent / public-or-test-contract; a parameter-object would not improve clarity
+    private String modifyDcsContent(ProjectContext ctx, String normFqn, MdObject owner, // NOSONAR signature is inherent / public-or-test-contract; a parameter-object would not improve clarity
         JsonObject dcsSpec, boolean localeUnused)
     {
-        // The Report is a top BM object - capture its bmGetId up front, re-fetch inside the tx (a top
+        // The owner is a top BM object - capture its bmGetId up front, re-fetch inside the tx (a top
         // object's eContainer() does not reliably climb).
-        IBmObject reportBm = (IBmObject)report;
-        final long reportBmId = reportBm.bmGetId();
+        IBmObject ownerBm = (IBmObject)owner;
+        final long ownerBmId = ownerBm.bmGetId();
 
         DcsWriteContext writeCtx = resolveDcsWriteContext(ctx);
         if (writeCtx.error != null)
@@ -2166,14 +2177,14 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         }
 
         // Captured inside the write: the on-disk export targets. exportFqnHolder = the DCS template's TOP
-        // object (the Report), contentFqnHolder = the DCS content's OWN resource FQN (the .dcs).
+        // owner top object, contentFqnHolder = the DCS content's OWN resource FQN (the .dcs).
         final String[] exportFqnHolder = {null};
         final String[] contentFqnHolder = {null};
         DcsWriter.Result result;
         try
         {
             result = BmTransactions.write(writeCtx.bmModel, "ModifyDcsContent", //$NON-NLS-1$
-                (tx, pm) -> applyDcsSpec(tx, reportBmId, writeCtx, normFqn, dcsSpec, exportFqnHolder,
+                (tx, pm) -> applyDcsSpec(tx, ownerBmId, writeCtx, normFqn, dcsSpec, exportFqnHolder,
                     contentFqnHolder));
         }
         catch (TemplateWriteException e)
@@ -2187,7 +2198,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
                 + unwrapCauseMessage(e)).toJson();
         }
 
-        // Dual force-export: the DCS template's top object (the Report - drains the .mdo + the template
+        // Dual force-export: the DCS template's owner top object (drains the .mdo + the template
         // registration) AND the DCS content's own resource (drains the .dcs), guarding the #239-class
         // silent-false-success (persisted=true while the authored schema never reaches disk).
         List<String> exportFqns = new ArrayList<>();
@@ -2301,27 +2312,29 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
     }
 
     /**
-     * The DCS write-transaction body: re-fetches the Report by its BM id, finds-or-materializes its
-     * main DCS template, records the export targets into {@code exportFqnHolder} /
-     * {@code contentFqnHolder}, resolves the content {@link DataCompositionSchema} and applies the
+     * The DCS write-transaction body: re-fetches the owner by its BM id, resolves its DCS template
+     * (materializing the main template only for a regular Report), records the export targets into
+     * {@code exportFqnHolder} / {@code contentFqnHolder}, resolves the content
+     * {@link DataCompositionSchema} and applies the
      * payload via {@link DcsWriter}. Throws a {@link TemplateWriteException} carrying a ready JSON
      * error on a resolution / validation failure, so the surrounding tx rolls back with no partial
      * mutation. Extracted verbatim from the write lambda of {@link #modifyDcsContent}.
      */
-    private static DcsWriter.Result applyDcsSpec(IBmTransaction tx, long reportBmId,
+    private static DcsWriter.Result applyDcsSpec(IBmTransaction tx, long ownerBmId,
         DcsWriteContext writeCtx, String normFqn, JsonObject dcsSpec, String[] exportFqnHolder,
         String[] contentFqnHolder)
     {
-        Object inTx = tx.getObjectById(reportBmId);
-        if (!(inTx instanceof Report))
+        Object inTx = tx.getObjectById(ownerBmId);
+        if (!(inTx instanceof MdObject) || !isDcsOwner((MdObject)inTx))
         {
-            throw new TemplateWriteException(ToolResult.error("The report could not be resolved " //$NON-NLS-1$
+            throw new TemplateWriteException(ToolResult.error("The DCS owner could not be resolved " //$NON-NLS-1$
                 + "inside the transaction.").toJson()); //$NON-NLS-1$
         }
-        Report txReport = (Report)inTx;
-        BasicTemplate dcsTemplate = findOrCreateDcsTemplate(txReport, writeCtx.factory, writeCtx.version);
-        // A report DCS template is inline in the report's .mdo (not a top object), so its export
-        // target is the OWNER top object (the Report), the same top climb as modifyTemplateContent -
+        MdObject txOwner = (MdObject)inTx;
+        BasicTemplate dcsTemplate = findDcsTemplate(txOwner, writeCtx.factory, writeCtx.version,
+            normFqn);
+        // A DCS template is inline in its owner's .mdo (not a top object), so its export
+        // target is the OWNER top object, the same top climb as modifyTemplateContent -
         // a bmGetFqn read is legal only on a top object.
         IBmObject templateBm = (IBmObject)dcsTemplate;
         IBmObject topObject = templateBm.bmIsTop() ? templateBm : templateBm.bmGetTopObject();
@@ -2347,21 +2360,38 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
     }
 
     /**
-     * Resolves the Report's main DCS {@link BasicTemplate}, lazily creating it when the report has none
-     * (designer / older reports have no DCS). A DCS template is a {@link Template} child of the report
-     * (inline in the report's {@code .mdo}, NOT a top object), created through the parent-aware model
+     * Resolves the owner's DCS {@link BasicTemplate}. A regular Report lazily creates its main DCS
+     * when absent (matching the existing generic contract). ExternalReport and ExternalDataProcessor
+     * are edited only when they already own a DCS template; implicit external template creation is
+     * deliberately refused until its platform initialization/persistence contract is proven live.
+     * A DCS template is a {@link Template} child of the owner
+     * (inline in the owner's {@code .mdo}, NOT a top object), created through the parent-aware model
      * factory exactly like {@code create_metadata} makes a template (its factory-initialized-child path),
      * marked {@link TemplateType#DATA_COMPOSITION_SCHEMA} and registered as the report's
      * {@code mainDataCompositionSchema} so the report is well-formed. MUST run inside the write boundary.
      */
-    private static BasicTemplate findOrCreateDcsTemplate(Report txReport, IModelObjectFactory factory,
-        Version version)
+    private static BasicTemplate findDcsTemplate(MdObject txOwner, IModelObjectFactory factory,
+        Version version, String normFqn)
     {
-        BasicTemplate existing = txReport.getMainDataCompositionSchema();
+        BasicTemplate existing = mainDcsTemplate(txOwner);
         if (existing != null)
         {
             return existing;
         }
+        for (Template candidate : dcsOwnerTemplates(txOwner))
+        {
+            if (candidate.getTemplateType() == TemplateType.DATA_COMPOSITION_SCHEMA)
+            {
+                return candidate;
+            }
+        }
+        if (!(txOwner instanceof Report))
+        {
+            throw new TemplateWriteException(ToolResult.error("DCS template not found for '" //$NON-NLS-1$
+                + normFqn + "'. ExternalReport and ExternalDataProcessor writes require an " //$NON-NLS-1$
+                + "existing DATA_COMPOSITION_SCHEMA template; create it in EDT first.").toJson()); //$NON-NLS-1$
+        }
+        Report txReport = (Report)txOwner;
         MdObject child = (MdObject)factory.create(MdClassPackage.Literals.TEMPLATE, txReport, version);
         if (child == null)
         {
@@ -2381,6 +2411,36 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         return template;
     }
 
+    private static BasicTemplate mainDcsTemplate(MdObject owner)
+    {
+        if (owner instanceof Report)
+        {
+            return ((Report)owner).getMainDataCompositionSchema();
+        }
+        if (owner instanceof ExternalReport)
+        {
+            return ((ExternalReport)owner).getMainDataCompositionSchema();
+        }
+        return null;
+    }
+
+    private static List<Template> dcsOwnerTemplates(MdObject owner)
+    {
+        if (owner instanceof Report)
+        {
+            return ((Report)owner).getTemplates();
+        }
+        if (owner instanceof ExternalReport)
+        {
+            return ((ExternalReport)owner).getTemplates();
+        }
+        if (owner instanceof ExternalDataProcessor)
+        {
+            return ((ExternalDataProcessor)owner).getTemplates();
+        }
+        return java.util.Collections.emptyList();
+    }
+
     /**
      * Resolves the {@link DataCompositionSchema} content of an in-transaction DCS template, creating an
      * empty one when the template has none usable yet. Mirrors {@link #resolveSpreadsheetContent}: a
@@ -2396,7 +2456,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         ITopObjectFqnGenerator fqnGenerator, String normFqn)
     {
         EObject contentObj = txTemplate.getTemplate();
-        // Reuse the existing content ONLY when it is an ATTACHED BM top object. findOrCreateDcsTemplate calls
+        // Reuse the existing content ONLY when it is an ATTACHED BM top object. findDcsTemplate calls
         // factory.fillDefaultReferences(template) after setting templateType=DATA_COMPOSITION_SCHEMA; if that
         // pre-materializes an UNATTACHED DataCompositionSchema in getTemplate(), returning it here would skip
         // attachTopObject, so contentResourceExportFqn(schema) yields null (bmIsTop()==false) and the sibling
@@ -2434,6 +2494,12 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
         applied.addProperty("fields", result.fields); //$NON-NLS-1$
         applied.addProperty("parameters", result.parameters); //$NON-NLS-1$
         applied.addProperty("calculatedFields", result.calculatedFields); //$NON-NLS-1$
+        if (result.settingsAfter != null)
+        {
+            applied.add("settingsBefore", result.settingsBefore); //$NON-NLS-1$
+            applied.add("settingsAfter", result.settingsAfter); //$NON-NLS-1$
+            applied.add("changedSettingsPaths", result.changedSettingsPaths); //$NON-NLS-1$
+        }
         ToolResult dcsResult = ToolResult.success()
             .put(McpKeys.ACTION, VAL_MODIFIED)
             .put("fqn", normFqn) //$NON-NLS-1$
@@ -2444,7 +2510,7 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
             dcsResult.put(KEY_LOCALE_UNUSED, true);
         }
         return dcsResult
-            .put(McpKeys.MESSAGE, "Modified DCS of report " + normFqn + " (dataSources: " //$NON-NLS-1$ //$NON-NLS-2$
+            .put(McpKeys.MESSAGE, "Modified DCS of " + normFqn + " (dataSources: " //$NON-NLS-1$ //$NON-NLS-2$
                 + result.dataSources + ", dataSets: " + result.dataSets + ", fields: " + result.fields //$NON-NLS-1$ //$NON-NLS-2$
                 + ", parameters: " + result.parameters + ", calculatedFields: " //$NON-NLS-1$ //$NON-NLS-2$
                 + result.calculatedFields + ")") //$NON-NLS-1$
@@ -2452,17 +2518,16 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
     }
 
     /**
-     * The actionable error for a {@code dcs} payload addressed to a FQN that is not a Report (a form
-     * member, a subsystem, or any other non-Report object): names the offending FQN + what it is, and
-     * points at the valid Report FQN shape. {@code isClause} describes the resolved target (e.g.
+     * The actionable error for a {@code dcs} payload addressed to a FQN that is not a supported DCS owner:
+     * names the offending FQN + what it is, and points at the valid owner kinds. {@code isClause} describes
+     * the resolved target (e.g.
      * {@code "is a Catalog"} or {@code "addresses a FORM member"}). Package-visible for tests.
      */
-    static String dcsOnlyForReportFqnError(String normFqn, String isClause)
+    static String dcsOnlyForOwnerFqnError(String normFqn, String isClause)
     {
-        return ToolResult.error("'dcs' is only valid for a Report FQN ('Report.<Name>'); '" + normFqn //$NON-NLS-1$
-            + "' " + isClause + ". 'dcs' authors a report's Data Composition Schema (data sets / query " //$NON-NLS-1$ //$NON-NLS-2$
-            + "text / fields / parameters); use 'properties' for a generic property change, or address a " //$NON-NLS-1$
-            + "Report.<Name>.").toJson(); //$NON-NLS-1$
+        return ToolResult.error("'dcs' is only valid for a DCS owner FQN (Report, ExternalReport, " //$NON-NLS-1$
+            + "or ExternalDataProcessor with an existing DCS template); '" + normFqn + "' " //$NON-NLS-1$ //$NON-NLS-2$
+            + isClause + ". Use 'properties' for a generic property change.").toJson(); //$NON-NLS-1$
     }
 
     /**
@@ -2532,14 +2597,14 @@ public class ModifyMetadataTool extends AbstractMetadataWriteTool
 
     /**
      * The actionable error for a present-but-malformed {@code dcs} argument (unparseable JSON, or a string
-     * / number / array rather than an object): the {@code dcs} payload authors a report's Data Composition
+     * / number / array rather than an object): the {@code dcs} payload authors an owner's Data Composition
      * Schema, so it must be a JSON object.
      */
     private static String malformedDcsError()
     {
         return ToolResult.error("'dcs' must be a JSON object, e.g. " //$NON-NLS-1$
-            + "{dataSets:[{name:'Main',type:'query',query:'SELECT ...'}]}. It authors a report's Data " //$NON-NLS-1$
-            + "Composition Schema (data sets / query text / fields / parameters) on a Report FQN.").toJson(); //$NON-NLS-1$
+            + "{dataSets:[{name:'Main',type:'query',query:'SELECT ...'}]}. It authors a Data Composition " //$NON-NLS-1$
+            + "Schema on a Report, ExternalReport, or ExternalDataProcessor owner FQN.").toJson(); //$NON-NLS-1$
     }
 
     /**

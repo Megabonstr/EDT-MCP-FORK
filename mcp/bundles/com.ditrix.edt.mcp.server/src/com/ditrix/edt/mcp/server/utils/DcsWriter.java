@@ -113,6 +113,7 @@ public final class DcsWriter
     private static final String KEY_DATA_SETS = "dataSets"; //$NON-NLS-1$
     private static final String KEY_PARAMETERS = "parameters"; //$NON-NLS-1$
     private static final String KEY_CALCULATED_FIELDS = "calculatedFields"; //$NON-NLS-1$
+    private static final String KEY_SETTINGS = "settings"; //$NON-NLS-1$
 
     // ---- per-entry keys -----------------------------------------------------------------------
 
@@ -248,9 +249,13 @@ public final class DcsWriter
         public final int parameters;
         /** Number of calculated fields applied (created or updated in place). */
         public final int calculatedFields;
+        public final JsonObject settingsBefore;
+        public final JsonObject settingsAfter;
+        public final JsonArray changedSettingsPaths;
 
         private Result(String error, int dataSources, int dataSets, int fields, int parameters,
-            int calculatedFields)
+            int calculatedFields, JsonObject settingsBefore, JsonObject settingsAfter,
+            JsonArray changedSettingsPaths)
         {
             this.error = error;
             this.dataSources = dataSources;
@@ -258,16 +263,23 @@ public final class DcsWriter
             this.fields = fields;
             this.parameters = parameters;
             this.calculatedFields = calculatedFields;
+            this.settingsBefore = settingsBefore;
+            this.settingsAfter = settingsAfter;
+            this.changedSettingsPaths = changedSettingsPaths;
         }
 
         static Result failed(String error)
         {
-            return new Result(error, 0, 0, 0, 0, 0);
+            return new Result(error, 0, 0, 0, 0, 0, null, null, new JsonArray());
         }
 
-        static Result ok(int dataSources, int dataSets, int fields, int parameters, int calculatedFields)
+        static Result ok(int dataSources, int dataSets, int fields, int parameters,
+            int calculatedFields, DcsSettingsWriter.Result settings)
         {
-            return new Result(null, dataSources, dataSets, fields, parameters, calculatedFields);
+            return new Result(null, dataSources, dataSets, fields, parameters, calculatedFields,
+                settings == null ? null : settings.before,
+                settings == null ? null : settings.after,
+                settings == null ? new JsonArray() : settings.changedPaths);
         }
 
         public boolean hasError()
@@ -350,12 +362,23 @@ public final class DcsWriter
         int sources = applyDataSets(schema, plan);
         int fields = applyFields(schema, plan);
         int calculatedFields = applyCalculatedFields(schema, plan);
+
+        DcsSettingsWriter.Result settingsResult = null;
+        if (plan.settings != null)
+        {
+            settingsResult = DcsSettingsWriter.apply(schema, plan.settings);
+            if (settingsResult.hasError())
+            {
+                return Result.failed(settingsResult.error);
+            }
+        }
         for (int i = 0; i < plan.parameters.size(); i++)
         {
             applyParameter(schema, plan.parameters.get(i), paramTypes[i]);
         }
 
-        return Result.ok(sources, plan.dataSets.size(), fields, plan.parameters.size(), calculatedFields);
+        return Result.ok(sources, plan.dataSets.size(), fields, plan.parameters.size(),
+            calculatedFields, settingsResult);
     }
 
     // ---- model mutation (typed DCS API) -------------------------------------------------------
@@ -690,18 +713,37 @@ public final class DcsWriter
         {
             error = parseCalculatedFields(spec, plan);
         }
+        if (error == null)
+        {
+            error = parseSettings(spec, plan);
+        }
         if (error != null)
         {
             return ParseResult.failed(error);
         }
         if (plan.dataSets.isEmpty() && plan.parameters.isEmpty() && plan.dataSources.isEmpty()
-            && plan.calculatedFields.isEmpty())
+            && plan.calculatedFields.isEmpty() && plan.settings == null)
         {
             return ParseResult.failed("The 'dcs' payload is empty: provide at least one of 'dataSets', " //$NON-NLS-1$
-                + "'parameters', 'dataSources' or 'calculatedFields', e.g. {dataSets:[{name:'DataSet1'," //$NON-NLS-1$
+                + "'parameters', 'dataSources', 'calculatedFields' or 'settings', e.g. " //$NON-NLS-1$
+                + "{dataSets:[{name:'DataSet1'," //$NON-NLS-1$
                 + "type:'query',query:'SELECT ...'}]}."); //$NON-NLS-1$
         }
         return ParseResult.ok(plan);
+    }
+
+    private static String parseSettings(JsonObject spec, Plan plan)
+    {
+        if (!spec.has(KEY_SETTINGS) || spec.get(KEY_SETTINGS).isJsonNull())
+        {
+            return null;
+        }
+        if (!spec.get(KEY_SETTINGS).isJsonObject())
+        {
+            return "'settings' must be a JSON object."; //$NON-NLS-1$
+        }
+        plan.settings = spec.getAsJsonObject(KEY_SETTINGS);
+        return DcsSettingsWriter.validate(plan.settings);
     }
 
     private static String parseDataSources(JsonObject spec, Plan plan)
@@ -1187,6 +1229,7 @@ public final class DcsWriter
         final List<DataSetPlan> dataSets = new ArrayList<>();
         final List<ParameterPlan> parameters = new ArrayList<>();
         final List<CalculatedFieldPlan> calculatedFields = new ArrayList<>();
+        JsonObject settings;
     }
 
     /** A validated data source (a name + a data source type). */

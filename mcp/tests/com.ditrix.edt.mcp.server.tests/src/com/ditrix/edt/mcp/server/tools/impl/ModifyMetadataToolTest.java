@@ -1140,26 +1140,26 @@ public class ModifyMetadataToolTest
     //
     // A `dcs` payload authors a report's Data Composition Schema; it is only valid on a Report FQN, is
     // authored through its own surface, and must not be mixed with a generic properties / membership
-    // content / Role / template payload. The two tool-level guards behind that (dcsOnlyForReportFqnError
+    // content / Role / template payload. The two tool-level guards behind that (dcsOnlyForOwnerFqnError
     // on a non-Report FQN; dcsMixError at the dispatch site) plus the parseDcsArg reader are pure and
     // covered here, mirroring the #245 template guard tests. The live BM write + force-export (the report
     // -> DCS-template resolution + the .dcs drain) is covered by the E2E suite.
 
     @Test
-    public void testDcsPayloadRefusedOnNonReportFqn()
+    public void testDcsPayloadRefusedOnNonOwnerFqn()
     {
         // A `dcs` payload addressed to a NON-Report FQN must be refused (not silently dropped while a
         // generic / role / content / template branch reports success): the error names the offending FQN,
         // the 'dcs' payload, what the FQN actually is, and points at the valid Report FQN shape.
-        String err = ModifyMetadataTool.dcsOnlyForReportFqnError(
+        String err = ModifyMetadataTool.dcsOnlyForOwnerFqnError(
             "Catalog.Goods", "is a Catalog"); //$NON-NLS-1$ //$NON-NLS-2$
         assertNotNull("a dcs payload on a non-Report FQN must be refused", err); //$NON-NLS-1$
         assertTrue("the refusal must be a ToolResult error json", err.contains("\"error\"")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("the refusal must name the offending FQN", err.contains("Catalog.Goods")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("the refusal must name the 'dcs' payload", err.contains("dcs")); //$NON-NLS-1$ //$NON-NLS-2$
         assertTrue("the refusal must echo what the FQN actually is", err.contains("is a Catalog")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertTrue("the refusal must point at the valid Report FQN shape", //$NON-NLS-1$
-            err.contains("Report.<Name>")); //$NON-NLS-1$
+        assertTrue("the refusal must name the supported owner kinds", //$NON-NLS-1$
+            err.contains("ExternalReport") && err.contains("ExternalDataProcessor")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test
