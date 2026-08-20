@@ -4389,11 +4389,9 @@
     "inputSchema": {
       "properties": {
         "formFqn": {
-          "description": "Form FQN: 'Type.Name.Form.FormName' or 'CommonForm.Name'.",
           "type": "string"
         },
         "projectName": {
-          "description": "EDT project name.",
           "type": "string"
         }
       },
@@ -4407,30 +4405,24 @@
     "outputSchema": {
       "properties": {
         "findingCount": {
-          "description": "Number of structural findings.",
           "type": "integer"
         },
         "findings": {
-          "description": "Findings as {code, severity, path, message}.",
           "items": {
             "type": "object"
           },
           "type": "array"
         },
         "formFqn": {
-          "description": "Normalized form FQN.",
           "type": "string"
         },
         "message": {
-          "description": "Human-readable validation summary.",
           "type": "string"
         },
         "success": {
-          "description": "Whether validation executed.",
           "type": "boolean"
         },
         "valid": {
-          "description": "Whether the form has no structural findings.",
           "type": "boolean"
         }
       },
