@@ -3,8 +3,8 @@
 from harness import (
     EXT_OBJECTS_PROJECT, EXT_OBJECTS_REL, PROJECT, assert_error,
     assert_error_quality,
-    assert_no_diff, assert_no_diff_rel, assert_ok, call, e2e_test,
-    assert_tree_unchanged, poll_diff_contains, tree_snapshot,
+    assert_diff_contains, assert_no_diff, assert_no_diff_rel, assert_ok, call,
+    e2e_test, assert_tree_unchanged, tree_snapshot,
     wait_for_project_ready,
 )
 
@@ -80,6 +80,8 @@ def test_default_settings_persist_and_return_normalized_read_back():
         },
     })
     assert_ok(result, "write advanced default DCS settings")
+    assert_diff_contains(marker,
+                         ctx="advanced settings must reach the report's .dcs before read-back")
     structured = result.structured or {}
     applied = structured.get("dcs") or {}
     if "settingsBefore" not in applied or "settingsAfter" not in applied:
@@ -102,7 +104,6 @@ def test_default_settings_persist_and_return_normalized_read_back():
     appearances = after.get("conditionalAppearance") or []
     if not appearances or (appearances[0].get("userSetting") or {}).get("id") != "e2e-appearance":
         raise AssertionError("conditional appearance exposure must round-trip: %r" % after)
-    poll_diff_contains(marker, ctx="advanced settings must reach the report's .dcs on disk")
     wait_for_project_ready()
     reread = call("get_metadata_details", {
         "projectName": PROJECT,
@@ -132,12 +133,14 @@ def test_canonical_modify_metadata_creates_and_persists_variant():
         },
     })
     assert_ok(result, "write an advanced DCS variant through canonical modify_metadata")
+    assert_diff_contains(marker,
+                         ctx="canonical modify_metadata variant must reach the .dcs immediately")
+    assert_diff_contains("E2EByWarehouse",
+                         ctx="the named DCS variant must reach the .dcs immediately")
     applied = (result.structured or {}).get("dcs") or {}
     after = applied.get("settingsAfter") or {}
     if after.get("target") != "variant" or after.get("variantName") != "E2EByWarehouse":
         raise AssertionError("canonical facade must return the authored variant: %r" % applied)
-    poll_diff_contains(marker, ctx="canonical modify_metadata variant must reach the .dcs on disk")
-    poll_diff_contains("E2EByWarehouse", ctx="the named DCS variant must reach the .dcs on disk")
 
 
 @e2e_test(tool="modify_dcs_settings", kind="write-metadata")
@@ -154,6 +157,10 @@ def test_surgical_upsert_preserves_structure_and_selection_selector_identity():
         },
     })
     assert_ok(initial, "seed stable selector identities")
+    assert_diff_contains("e2e-stable-id",
+                         ctx="the initial stable structure id must persist immediately")
+    assert_diff_contains("E2ESurgicalAmount",
+                         ctx="the initial selection selector must persist immediately")
 
     structure = call("modify_dcs_settings", {
         "projectName": PROJECT,
@@ -169,6 +176,8 @@ def test_surgical_upsert_preserves_structure_and_selection_selector_identity():
         },
     })
     assert_ok(structure, "surgically replace a structure item")
+    assert_diff_contains("After",
+                         ctx="the surgical structure replacement must persist immediately")
     after_structure = (((structure.structured or {}).get("dcs") or {}).get("settingsAfter") or {})
     items = after_structure.get("structure") or []
     if len(items) != 1 or items[0].get("id") != "e2e-stable-id" or items[0].get("name") != "After":
@@ -188,12 +197,22 @@ def test_surgical_upsert_preserves_structure_and_selection_selector_identity():
         },
     })
     assert_ok(selection, "surgically replace a selection item")
+    assert_diff_contains("E2E total",
+                         ctx="the surgical selection replacement must persist immediately")
     after_selection = (((selection.structured or {}).get("dcs") or {}).get("settingsAfter") or {})
     fields = after_selection.get("selection") or []
     if len(fields) != 1 or fields[0].get("field") != "E2ESurgicalAmount":
         raise AssertionError("selection upsert must preserve selector identity without duplicates: %r" % fields)
     if fields[0].get("title") != "E2E total":
         raise AssertionError("selection upsert must apply the replacement value: %r" % fields)
+    reread = call("get_metadata_details", {
+        "projectName": PROJECT,
+        "objectFqns": [owner + ".Template." + MAIN_DCS_TEMPLATE],
+    })
+    assert_ok(reread, "independently re-read the surgically updated default DCS")
+    if "E2ESurgicalAmount" not in (reread.text or ""):
+        raise AssertionError("independent DCS read-back must expose the surgical selection: %r"
+                             % (reread.text or ""))
 
 
 @e2e_test(tool="modify_dcs_settings", kind="write-metadata")

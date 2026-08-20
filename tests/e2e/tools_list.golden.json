@@ -4435,8 +4435,7 @@
         }
       },
       "required": [
-        "success",
-        "valid"
+        "success"
       ],
       "type": "object"
     }
