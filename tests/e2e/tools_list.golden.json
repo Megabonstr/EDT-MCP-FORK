@@ -3115,11 +3115,9 @@
     "inputSchema": {
       "properties": {
         "ownerFqn": {
-          "description": "DCS owner FQN: Report, ExternalReport, or ExternalDataProcessor (required; external owners must already contain a DCS template).",
           "type": "string"
         },
         "projectName": {
-          "description": "EDT project name (required).",
           "type": "string"
         },
         "settings": {
@@ -3138,23 +3136,18 @@
     "outputSchema": {
       "properties": {
         "action": {
-          "description": "Applied action",
           "type": "string"
         },
         "dcs": {
-          "description": "Applied counts plus settingsBefore/settingsAfter/changedSettingsPaths",
           "type": "object"
         },
         "fqn": {
-          "description": "Normalized DCS owner FQN",
           "type": "string"
         },
         "persisted": {
-          "description": "Whether EDT exported the owner and .dcs resource",
           "type": "boolean"
         },
         "success": {
-          "description": "Whether the write succeeded",
           "type": "boolean"
         }
       },
