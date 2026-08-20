@@ -96,6 +96,7 @@ import com.ditrix.edt.mcp.server.tools.impl.TerminateLaunchTool;
 import com.ditrix.edt.mcp.server.tools.impl.TranslateConfigurationTool;
 import com.ditrix.edt.mcp.server.tools.impl.UpdateDatabaseTool;
 import com.ditrix.edt.mcp.server.tools.impl.ValidateQueryTool;
+import com.ditrix.edt.mcp.server.tools.impl.ValidateFormModelTool;
 import com.ditrix.edt.mcp.server.tools.impl.ValidateXdtoPackageTool;
 import com.ditrix.edt.mcp.server.tools.impl.WaitForBreakTool;
 import com.ditrix.edt.mcp.server.tools.impl.WriteModuleSourceTool;
@@ -230,6 +231,7 @@ public final class BuiltInToolRegistrar
         catalogue.add(new ModifyMetadataTool());
         catalogue.add(new AdoptMetadataObjectTool());
         catalogue.add(new ValidateXdtoPackageTool());
+        catalogue.add(new ValidateFormModelTool());
 
         // LanguageTool translation tools
         catalogue.add(new GenerateTranslationStringsTool());

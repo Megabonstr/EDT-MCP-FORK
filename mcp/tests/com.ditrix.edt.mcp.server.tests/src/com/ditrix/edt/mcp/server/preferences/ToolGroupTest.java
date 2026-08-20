@@ -120,6 +120,7 @@ public class ToolGroupTest
     {
         assertEquals(ToolGroup.CORE, ToolGroup.getGroupForTool("get_edt_version"));
         assertEquals(ToolGroup.PROBLEMS, ToolGroup.getGroupForTool("get_project_errors"));
+        assertEquals(ToolGroup.PROBLEMS, ToolGroup.getGroupForTool("validate_form_model")); //$NON-NLS-1$
         assertEquals(ToolGroup.APPLICATIONS, ToolGroup.getGroupForTool("list_configurations"));
         assertEquals(ToolGroup.DEBUG, ToolGroup.getGroupForTool("set_breakpoint"));
         assertEquals(ToolGroup.BSL_CODE, ToolGroup.getGroupForTool("read_module_source"));
