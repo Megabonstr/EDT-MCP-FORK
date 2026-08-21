@@ -140,7 +140,7 @@ public final class Toolsets
         assign(CODE,
             "write_module_source", "read_method_source", "get_method_call_hierarchy", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             "get_outgoing_structures", "go_to_definition", "get_symbol_info", "find_references", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
-            "get_content_assist", "validate_query"); //$NON-NLS-1$ //$NON-NLS-2$
+            "get_content_assist", "validate_query", "code_review"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
         assign(DEBUG,
             "debug_launch", "debug_status", "set_breakpoint", "remove_breakpoint", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
