@@ -2,7 +2,7 @@
 
 One page per tool: what it does, every parameter, and how it works. Generated from the live server by `docs/generate_tool_docs.py` (re-run to refresh; the source of truth is each tool's Java).
 
-**91 tools.**
+**92 tools.**
 
 ## Core
 
@@ -112,6 +112,7 @@ One page per tool: what it does, every parameter, and how it works. Generated fr
 | [`get_form_layout_snapshot`](get_form_layout_snapshot.md) | Return a YAML snapshot of a form's calculated WYSIWYG layout (bounds, element types, display properties) as text; use it to inspect or compare what a form ac… |
 | [`get_form_screenshot`](get_form_screenshot.md) | Capture a PNG screenshot of a form's WYSIWYG editor; pass formPath to open the form automatically or omit it to shoot the active editor. Requires EDT launche… |
 | [`get_template_screenshot`](get_template_screenshot.md) | Capture a PNG screenshot of a 1C template (a SpreadsheetDocument print form) as EDT renders it, so its layout and text are visible to an AI. Works for a comm… |
+| [`validate_form_model`](validate_form_model.md) | Validate managed-form IDs, names, bindings, handlers, attachment and command-bar invariants. Full parameters and examples: call get_tool_guide('validate_for… |
 
 ## Tags
 
