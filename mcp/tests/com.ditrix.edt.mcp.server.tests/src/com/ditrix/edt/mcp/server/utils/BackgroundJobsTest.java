@@ -1322,6 +1322,34 @@ public class BackgroundJobsTest
         }
     }
 
+    @Test
+    public void testExclusiveOwnerAdmissionSurvivesIndependentCallers() throws Exception
+    {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        try (BackgroundJobs jobs = new BackgroundJobs(4, 2))
+        {
+            JobSnapshot first = jobs.startExclusive("code_review", 5_000L, "first", progress -> { //$NON-NLS-1$ //$NON-NLS-2$
+                entered.countDown();
+                release.await();
+                return "done"; //$NON-NLS-1$
+            });
+            assertNotNull(first);
+            assertTrue(entered.await(1, TimeUnit.SECONDS));
+
+            assertNull(jobs.startExclusive("code_review", 5_000L, "duplicate", //$NON-NLS-1$ //$NON-NLS-2$
+                progress -> "must not run")); //$NON-NLS-1$
+            assertEquals(first.getId(), jobs.findRunningByOwner("code_review").getId()); //$NON-NLS-1$
+            assertNotNull(jobs.startExclusive("another_tool", 5_000L, "independent", //$NON-NLS-1$ //$NON-NLS-2$
+                progress -> "done")); //$NON-NLS-1$
+
+            release.countDown();
+            assertEquals(Status.DONE, jobs.await(first.getId(), 2_000L).getStatus());
+            assertNotNull(jobs.startExclusive("code_review", 5_000L, "next", //$NON-NLS-1$ //$NON-NLS-2$
+                progress -> "done")); //$NON-NLS-1$
+        }
+    }
+
     /**
      * A terminal status is published before its admission slot is released, so a finished job
      * does not imply that its slot is back; tests must wait for the deliberate release ordering.

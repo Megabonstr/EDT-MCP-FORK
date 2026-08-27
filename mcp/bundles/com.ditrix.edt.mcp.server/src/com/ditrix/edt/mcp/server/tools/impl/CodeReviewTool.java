@@ -52,8 +52,6 @@ public class CodeReviewTool implements IMcpTool
 
     private final BackgroundJobs jobs;
     private final CodeReviewBridge bridge;
-    private final Object startLock = new Object();
-    private String activeJobId;
 
     public CodeReviewTool()
     {
@@ -167,45 +165,41 @@ public class CodeReviewTool implements IMcpTool
             return ToolResult.error(e.getMessage()).toJson();
         }
 
-        synchronized (startLock)
+        try
         {
-            JobSnapshot active = activeJobId == null ? null : jobs.get(activeJobId);
-            if (active != null && active.getStatus() == BackgroundJobs.Status.RUNNING)
+            JobSnapshot started = jobs.startExclusive(NAME, JOB_REGISTRY_TIMEOUT_MS,
+                "Accepted Code Review " + plugin.version() + " for project '" //$NON-NLS-1$ //$NON-NLS-2$
+                    + projectName + "'.", progress -> { //$NON-NLS-1$
+                        // Once the plugin process is about to start, cancellation is deliberately
+                        // unsupported in v1: its public runner does not expose a safe process stop.
+                        if (!progress.tryCommit())
+                        {
+                            return null;
+                        }
+                        progress.add("Started the Code Review runner; this v1 analysis cannot " //$NON-NLS-1$
+                            + "be safely cancelled. Its internal limit is 10 minutes."); //$NON-NLS-1$
+                        return bridge.review(plugin, projectName, scope.sourceRoot,
+                            wholeProject, scope.modules, progress);
+                    });
+            if (started == null)
             {
-                return ToolResult.error("Another code_review analysis is already running as job '" //$NON-NLS-1$
-                    + activeJobId + "'. Poll it with get_job_status and wait for a terminal state " //$NON-NLS-1$
+                JobSnapshot active = jobs.findRunningByOwner(NAME);
+                String activeJob = active == null ? "" //$NON-NLS-1$
+                    : " as job '" + active.getId() + "'"; //$NON-NLS-1$ //$NON-NLS-2$
+                return ToolResult.error("Another code_review analysis is already running" //$NON-NLS-1$
+                    + activeJob + ". Poll it with get_job_status and wait for a terminal state " //$NON-NLS-1$
                     + "before starting another analysis.").toJson(); //$NON-NLS-1$
             }
-            activeJobId = null;
-
-            try
-            {
-                JobSnapshot started = jobs.start(NAME, JOB_REGISTRY_TIMEOUT_MS,
-                    "Accepted Code Review " + plugin.version() + " for project '" //$NON-NLS-1$ //$NON-NLS-2$
-                        + projectName + "'.", progress -> { //$NON-NLS-1$
-                            // Once the plugin process is about to start, cancellation is deliberately
-                            // unsupported in v1: its public runner does not expose a safe process stop.
-                            if (!progress.tryCommit())
-                            {
-                                return null;
-                            }
-                            progress.add("Started the Code Review runner; this v1 analysis cannot " //$NON-NLS-1$
-                                + "be safely cancelled. Its internal limit is 10 minutes."); //$NON-NLS-1$
-                            return bridge.review(plugin, projectName, scope.sourceRoot,
-                                wholeProject, scope.modules, progress);
-                        });
-                activeJobId = started.getId();
-                return BackgroundJobRenderer.render(BackgroundJobPolling.await(jobs,
-                    started.getId(), waitSeconds.intValue()));
-            }
-            catch (RejectedExecutionException e)
-            {
-                return ToolResult.error(
-                    "Could not start code_review because the background-job registry is full or " //$NON-NLS-1$
-                        + "stopping: " + safeMessage(e) + ". Poll existing jobs with " //$NON-NLS-1$ //$NON-NLS-2$
-                        + "get_job_status and retry, or restart EDT if the bundle is stopping.") //$NON-NLS-1$
-                    .toJson();
-            }
+            return BackgroundJobRenderer.render(BackgroundJobPolling.await(jobs,
+                started.getId(), waitSeconds.intValue()));
+        }
+        catch (RejectedExecutionException e)
+        {
+            return ToolResult.error(
+                "Could not start code_review because the background-job registry is full or " //$NON-NLS-1$
+                    + "stopping: " + safeMessage(e) + ". Poll existing jobs with " //$NON-NLS-1$ //$NON-NLS-2$
+                    + "get_job_status and retry, or restart EDT if the bundle is stopping.") //$NON-NLS-1$
+                .toJson();
         }
     }
 

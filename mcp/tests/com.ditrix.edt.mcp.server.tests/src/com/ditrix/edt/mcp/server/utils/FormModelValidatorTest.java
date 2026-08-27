@@ -111,13 +111,17 @@ public class FormModelValidatorTest
         String handlerError = FormElementWriter.createHandler(existingCommand, "Action", //$NON-NLS-1$
             "RefreshAction", null, null, new String[1]); //$NON-NLS-1$
         assertEquals(handlerError, null, handlerError);
+        assertEquals(0, countCode(FormModelValidator.validate(form),
+            "invalid-handler-reference")); //$NON-NLS-1$
         EObject action = FormStructureReader.getSingleReference(existingCommand, "action"); //$NON-NLS-1$
         EObject handler = FormStructureReader.getSingleReference(action, "handler"); //$NON-NLS-1$
         handler.eUnset(feature(handler, "name")); //$NON-NLS-1$
 
-        Set<String> codes = codes(FormModelValidator.validate(form));
+        FormModelValidator.Result result = FormModelValidator.validate(form);
+        Set<String> codes = codes(result);
         assertTrue(codes.contains("bad-command-reference")); //$NON-NLS-1$
         assertTrue(codes.contains("invalid-handler-reference")); //$NON-NLS-1$
+        assertEquals(1, countCode(result, "invalid-handler-reference")); //$NON-NLS-1$
     }
 
     @Test
@@ -142,6 +146,11 @@ public class FormModelValidatorTest
     private static Set<String> codes(FormModelValidator.Result result)
     {
         return result.findings().stream().map(f -> f.code).collect(Collectors.toSet());
+    }
+
+    private static long countCode(FormModelValidator.Result result, String code)
+    {
+        return result.findings().stream().filter(f -> code.equals(f.code)).count();
     }
 
     private static EStructuralFeature feature(EObject object, String name)

@@ -11,7 +11,6 @@ Run the optional MCP:RSV Code Review plugin headlessly for explicit BSL modules 
 | waitSeconds | — | integer | Seconds this start call waits for the background job, from 0 to 45; default 5. Use 0 to return the jobId immediately, then poll get_job_status. |
 
 ## Guide
-## Guide
 
 Runs the separately installed MCP:RSV Code Review plugin without editor selection, UI commands,
 Problems markers, or result views. The plugin's current diagnostic preferences are used unchanged.

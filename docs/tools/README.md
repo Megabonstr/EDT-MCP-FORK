@@ -105,7 +105,7 @@ One page per tool: what it does, every parameter, and how it works. Generated fr
 
 ## Forms
 
-> Form and template rendering: form layout snapshot, form screenshot, template screenshot.
+> Managed-form validation, layout snapshot and screenshots.
 
 | Tool | Description |
 |------|-------------|
