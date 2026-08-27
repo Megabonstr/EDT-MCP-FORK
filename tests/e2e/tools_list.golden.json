@@ -4465,6 +4465,68 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
+    "description": "Validate managed-form IDs, names, bindings, handlers, attachment and command-bar invariants. Full parameters and examples: call get_tool_guide('validate_form_model').",
+    "inputSchema": {
+      "properties": {
+        "formFqn": {
+          "description": "Form FQN: 'Type.Name.Form.FormName' or 'CommonForm.Name'.",
+          "type": "string"
+        },
+        "projectName": {
+          "description": "EDT project name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectName",
+        "formFqn"
+      ],
+      "type": "object"
+    },
+    "name": "validate_form_model",
+    "outputSchema": {
+      "properties": {
+        "findingCount": {
+          "description": "Number of structural findings.",
+          "type": "integer"
+        },
+        "findings": {
+          "description": "Findings as {code, severity, path, message}.",
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "formFqn": {
+          "description": "Normalized form FQN.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Human-readable validation summary.",
+          "type": "string"
+        },
+        "success": {
+          "description": "Whether validation executed.",
+          "type": "boolean"
+        },
+        "valid": {
+          "description": "Whether the form has no structural findings.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success",
+        "valid"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
     "description": "Check a 1C query for syntax and metadata-reference errors. Parameters and examples: get_tool_guide('validate_query').",
     "inputSchema": {
       "properties": {
