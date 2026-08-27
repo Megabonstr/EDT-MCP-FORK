@@ -2,7 +2,7 @@
 
 One page per tool: what it does, every parameter, and how it works. Generated from the live server by `docs/generate_tool_docs.py` (re-run to refresh; the source of truth is each tool's Java).
 
-**90 tools.**
+**91 tools.**
 
 ## Core
 
@@ -50,6 +50,7 @@ One page per tool: what it does, every parameter, and how it works. Generated fr
 
 | Tool | Description |
 |------|-------------|
+| [`code_review`](code_review.md) | Run the optional MCP:RSV Code Review plugin headlessly for explicit BSL modules or an explicitly requested whole project. |
 | [`find_references`](find_references.md) | Find every place a metadata object is used: BSL code modules (with line numbers), other metadata, forms, roles, subsystems, etc. Pass the object FQN; the typ… |
 | [`get_content_assist`](get_content_assist.md) | Get code-completion proposals at a 1-based line/column in a BSL module - the members, globals and variables valid at that caret (e.g. after a '.'). May retur… |
 | [`get_method_call_hierarchy`](get_method_call_hierarchy.md) | Trace which BSL methods call a method or are called by it; optional depth walks the chain transitively for impact analysis (callers only, max 5). Finds STATI… |
