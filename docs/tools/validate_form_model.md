@@ -32,6 +32,3 @@ runtime UI test.
 ## Example
 
 `{projectName:'P', formFqn:'Catalog.Products.Form.ItemForm'}`
-
----
-*Generated-equivalent reference assembled from the tool source and guide. Regenerate it from the live development build with `docs/generate_tool_docs.py` before opening the PR.*

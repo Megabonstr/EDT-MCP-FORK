@@ -302,7 +302,11 @@ public final class FormModelValidator
     private static void validateHandler(EObject object, List<Finding> findings)
     {
         String className = object.eClass().getName();
-        if (!className.contains("Handler")) //$NON-NLS-1$
+        // EDT also persists service containers such as FormCommandHandlerContainer. Their
+        // class names contain "Handler", but they do not represent a BSL procedure and have no
+        // programmatic name by design. Only named handler model objects carry that contract.
+        if (!className.contains("Handler") //$NON-NLS-1$
+            || object.eClass().getEStructuralFeature(FEATURE_NAME) == null)
         {
             return;
         }
