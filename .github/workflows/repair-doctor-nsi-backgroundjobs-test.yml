@@ -1,0 +1,42 @@
+name: Repair Doctor NSI BackgroundJobs test merge
+
+on:
+  push:
+    branches:
+      - feature/doctor-nsi-custom-tools-upstream-2026-09-08
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: feature/doctor-nsi-custom-tools-upstream-2026-09-08
+      - name: Restore current upstream test and replay only custom hardening test
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH='feature/doctor-nsi-custom-tools-upstream-2026-09-08'
+          FILE='mcp/tests/com.ditrix.edt.mcp.server.tests/src/com/ditrix/edt/mcp/server/utils/BackgroundJobsTest.java'
+          UPSTREAM='c27258779ed8c727e5ab9949e5bb2f7aadff5982'
+          CUSTOM='515235050d624d7c171e3cb3246986d2b67db310'
+
+          git fetch origin local/doctor-nsi-upstream-temp-2026-09-01
+          git checkout "$UPSTREAM" -- "$FILE"
+          git show "$CUSTOM" -- "$FILE" | git apply --3way
+
+          grep -q 'testWorkArrivingAfterTheDeadlineIsRefusedTheCommit' "$FILE"
+          grep -q 'deadlinePublished' "$FILE"
+          grep -q 'testExclusiveOwnerAdmissionSurvivesIndependentCallers' "$FILE"
+          git diff --check
+
+          git rm .github/workflows/repair-doctor-nsi-backgroundjobs-test.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$FILE"
+          git commit -m 'test: preserve current upstream BackgroundJobs coverage'
+          git push origin HEAD:"$BRANCH"
