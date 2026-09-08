@@ -262,6 +262,39 @@
   },
   {
     "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Run the optional MCP:RSV Code Review plugin headlessly for explicit BSL modules or an explicitly requested whole project, returning a background job to poll with get_job_status. Full parameters and examples: call get_tool_guide('code_review').",
+    "inputSchema": {
+      "properties": {
+        "modulePaths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "projectName": {
+          "type": "string"
+        },
+        "waitSeconds": {
+          "type": "integer"
+        },
+        "wholeProject": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "projectName"
+      ],
+      "type": "object"
+    },
+    "name": "code_review",
+    "outputSchema": null
+  },
+  {
+    "annotations": {
       "destructiveHint": false,
       "idempotentHint": false,
       "openWorldHint": false,
@@ -4587,6 +4620,59 @@
           "type": "string"
         },
         "willTerminateRunningClients": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "annotations": {
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true
+    },
+    "description": "Validate managed-form IDs, names, bindings, handlers, attachment and command-bar invariants. Full parameters and examples: call get_tool_guide('validate_form_model').",
+    "inputSchema": {
+      "properties": {
+        "formFqn": {
+          "type": "string"
+        },
+        "projectName": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "projectName",
+        "formFqn"
+      ],
+      "type": "object"
+    },
+    "name": "validate_form_model",
+    "outputSchema": {
+      "properties": {
+        "findingCount": {
+          "type": "integer"
+        },
+        "findings": {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "formFqn": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "valid": {
           "type": "boolean"
         }
       },
