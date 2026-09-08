@@ -30,7 +30,7 @@ public enum ToolGroup
     PROBLEMS("problems", "Errors & Problems", //$NON-NLS-1$ //$NON-NLS-2$
         "Error reporting, validation, and workspace markers (bookmarks, tasks)", //$NON-NLS-1$
         "get_problem_summary", "get_project_errors", "get_markers", "apply_quick_fix", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
-        "validate_xdto_package"), //$NON-NLS-1$
+        "validate_xdto_package", "validate_form_model"), //$NON-NLS-1$ //$NON-NLS-2$
 
     CODE_INTELLIGENCE("codeIntelligence", "Code Intelligence", //$NON-NLS-1$ //$NON-NLS-2$
         "Content assist, documentation, metadata and common-picture browsing, and references", //$NON-NLS-1$
@@ -63,6 +63,7 @@ public enum ToolGroup
         "read_module_source", "write_module_source", "get_module_structure", "list_modules", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         "search_in_code", "read_method_source", "get_method_call_hierarchy", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         "get_outgoing_structures", "go_to_definition", "get_symbol_info", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        "code_review", //$NON-NLS-1$
         "get_form_layout_snapshot", //$NON-NLS-1$
         "get_form_screenshot", "get_template_screenshot", "validate_query"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
