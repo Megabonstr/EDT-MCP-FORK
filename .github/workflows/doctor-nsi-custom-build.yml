@@ -29,6 +29,10 @@ jobs:
           grep -q 'compare_configurations' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
           grep -q 'code_review' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
           grep -q 'validate_form_model' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
+          BG_TEST='mcp/tests/com.ditrix.edt.mcp.server.tests/src/com/ditrix/edt/mcp/server/utils/BackgroundJobsTest.java'
+          grep -q 'testWorkArrivingAfterTheDeadlineIsRefusedTheCommit' "$BG_TEST"
+          grep -q 'deadlinePublished' "$BG_TEST"
+          grep -q 'testExclusiveOwnerAdmissionSurvivesIndependentCallers' "$BG_TEST"
           python3 - <<'PY'
           import json
           data=json.load(open('tests/e2e/tools_list.golden.json', encoding='utf-8'))
