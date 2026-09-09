@@ -30,7 +30,7 @@ public enum ToolGroup
     PROBLEMS("problems", "Errors & Problems", //$NON-NLS-1$ //$NON-NLS-2$
         "Error reporting, validation, and workspace markers (bookmarks, tasks)", //$NON-NLS-1$
         "get_problem_summary", "get_project_errors", "get_markers", "apply_quick_fix", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
-        "validate_xdto_package"), //$NON-NLS-1$
+        "validate_xdto_package", "validate_form_model"), //$NON-NLS-1$ //$NON-NLS-2$
 
     CODE_INTELLIGENCE("codeIntelligence", "Code Intelligence", //$NON-NLS-1$ //$NON-NLS-2$
         "Content assist, documentation, metadata and common-picture browsing, and references", //$NON-NLS-1$
@@ -46,7 +46,7 @@ public enum ToolGroup
         "Application and infobase management, external-object builds, launch, testing, " //$NON-NLS-1$
             + "background jobs, and Workmate", //$NON-NLS-1$
         "get_applications", "list_configurations", "create_launch_config", "delete_launch_config", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
-        "create_infobase", "delete_infobase", "update_database", "debug_launch", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        "create_infobase", "delete_infobase", "update_database", "launch", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         "terminate_launch", "run_yaxunit_tests", "ask_workmate", "get_job_status", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         "cancel_job", "build_external_objects", "set_infobase_credentials"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
@@ -62,18 +62,31 @@ public enum ToolGroup
         "read_module_source", "write_module_source", "get_module_structure", "list_modules", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         "search_in_code", "read_method_source", "get_method_call_hierarchy", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         "get_outgoing_structures", "go_to_definition", "get_symbol_info", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        "code_review", //$NON-NLS-1$
         "get_form_layout_snapshot", //$NON-NLS-1$
         "get_form_screenshot", "get_template_screenshot", "validate_query"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
     REFACTORING("refactoring", "Refactoring", //$NON-NLS-1$ //$NON-NLS-2$
-        "Metadata create, rename, adopt, delete, and property management", //$NON-NLS-1$
+        "Metadata and DCS create, inspect, rename, adopt, delete, and property management", //$NON-NLS-1$
         "rename_metadata_object", "delete_metadata", "create_metadata", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-        "modify_metadata", "adopt_metadata_object"), //$NON-NLS-1$ //$NON-NLS-2$
+        "modify_metadata", "adopt_metadata_object", "dcs"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
     TRANSLATION("translation", "Translation (LanguageTool)", //$NON-NLS-1$ //$NON-NLS-2$
         "LanguageTool: translation strings generation, configuration sync, project info", //$NON-NLS-1$
         "generate_translation_strings", "translate_configuration", //$NON-NLS-1$ //$NON-NLS-2$
         "get_translation_project_info"), //$NON-NLS-1$
+
+    /**
+     * Three-way configuration comparison. Its own group rather than a few names appended to an
+     * existing one: the three tools are useless apart (a comparison is started, then expanded,
+     * then its merge rules are read or authored), and EDT runs ONE comparison at a time, so an
+     * operator who wants that slot left alone turns off exactly this group. Nothing here ships
+     * disabled - the family never merges and never writes the project.
+     */
+    COMPARISON("comparison", "Comparison", //$NON-NLS-1$ //$NON-NLS-2$
+        "Three-way configuration comparison: start one against two git revisions, expand a node," //$NON-NLS-1$
+            + " and read or author the merge-rules file", //$NON-NLS-1$
+        "compare_configurations", "get_comparison_node", "merge_rules"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
     /**
      * Git tools. The {@code git} command tool ships DISABLED by default, and this tree is the UI its

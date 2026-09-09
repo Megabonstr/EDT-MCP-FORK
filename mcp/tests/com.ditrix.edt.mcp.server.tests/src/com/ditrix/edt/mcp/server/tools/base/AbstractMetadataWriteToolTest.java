@@ -22,6 +22,7 @@ import java.util.Map;
 import org.junit.Test;
 
 import com.ditrix.edt.mcp.server.protocol.ToolResult;
+import com.ditrix.edt.mcp.server.utils.BoundedJob;
 import com.ditrix.edt.mcp.server.utils.BuildUtils.DiskExportState;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -179,6 +180,8 @@ public class AbstractMetadataWriteToolTest
 
         assertTrue("a pending export must not be reported as success", //$NON-NLS-1$
             answer.contains("\"success\":false")); //$NON-NLS-1$
+        assertTrue("the pending-export refusal follows a committed model write", //$NON-NLS-1$
+            answer.contains("\"mutationCommitted\":true")); //$NON-NLS-1$
         // The caller's next move depends on knowing nothing was undone - a refusal that let them
         // assume a rollback would be worse than the raw success it replaced.
         assertTrue("the refusal must say nothing was rolled back: " + answer, //$NON-NLS-1$
@@ -239,14 +242,16 @@ public class AbstractMetadataWriteToolTest
     }
 
     @Test
-    public void testAnErrorResultIsNeverWaitedOn()
+    public void testAnErrorAfterARecordedWriteIsMarkedAndNeverWaitedOn()
     {
         // An error is a well-formed JSON object too. Waiting on one would spend the whole deadline
         // on a call that wrote nothing, and then re-report a rejected argument as a disk problem.
         RecordingEnvironment environment = new RecordingEnvironment(DiskExportState.PENDING);
         String result = ToolResult.error("Node not found: Catalog.Nope").toJson(); //$NON-NLS-1$
 
-        assertSame(result, new StubTool(environment).awaitDiskExport(params(PROJECT), result, wroteIn(PROJECT)));
+        String answer = new StubTool(environment).awaitDiskExport(params(PROJECT), result, wroteIn(PROJECT));
+        assertTrue(answer.contains("\"mutationCommitted\":true")); //$NON-NLS-1$
+        assertTrue(answer.contains("Node not found: Catalog.Nope")); //$NON-NLS-1$
         assertEquals("an error result must not reach the export wait", 0, environment.calls); //$NON-NLS-1$
     }
 
@@ -488,6 +493,75 @@ public class AbstractMetadataWriteToolTest
             new StubTool(environment).awaitDiskExport(params(PROJECT), successJson(), wroteIn(PROJECT));
 
         assertNull(publishedProjects(answer));
+    }
+
+    @Test
+    public void testTimedOutConfirmedCallWithoutRecordedWriteCarriesUnknownMutationMarker()
+    {
+        String answer = boundedOutcomeAnswer(BoundedJob.Outcome.TIMED_OUT, silent());
+        JsonObject result = JsonParser.parseString(answer).getAsJsonObject();
+
+        // The e2e harness and structured clients decide whether to reset from this member, not from
+        // words such as "may still finish" in the human-readable error. A timeout after UI work
+        // started therefore has to fail closed even before the first BM commit is observed.
+        assertTrue(result.get("mutationOutcomeUnknown").getAsBoolean()); //$NON-NLS-1$
+        assertFalse(result.has("mutationCommitted")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testTimedOutConfirmedCallWithRecordedWriteCarriesOnlyCommittedMarker()
+    {
+        String answer = boundedOutcomeAnswer(BoundedJob.Outcome.TIMED_OUT, wroteIn(PROJECT));
+        JsonObject result = JsonParser.parseString(answer).getAsJsonObject();
+
+        // A recorded commit is stronger than an in-flight uncertainty. Structured callers need the
+        // strongest fact, and ToolResult's precedence contract must not leave contradictory flags.
+        assertTrue(result.get("mutationCommitted").getAsBoolean()); //$NON-NLS-1$
+        assertFalse(result.has("mutationOutcomeUnknown")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testInterruptedConfirmedCallWithoutRecordedWriteCarriesUnknownMutationMarker()
+    {
+        String answer = boundedOutcomeAnswer(BoundedJob.Outcome.INTERRUPTED, silent());
+        JsonObject result = JsonParser.parseString(answer).getAsJsonObject();
+
+        // Interrupting the waiter cannot preempt UI work. The structural marker, rather than the
+        // message text, is what makes a mandatory re-read visible to automated callers.
+        assertTrue(result.get("mutationOutcomeUnknown").getAsBoolean()); //$NON-NLS-1$
+        assertFalse(result.has("mutationCommitted")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testNeverStartedBoundedOutcomesCarryNoMutationMarker()
+    {
+        StubTool tool = new StubTool(new RecordingEnvironment(DiskExportState.DRAINED));
+        Map<String, String> confirmed = params(PROJECT);
+        confirmed.put("confirm", "true"); //$NON-NLS-1$ //$NON-NLS-2$
+        for (BoundedJob.Outcome outcome : Arrays.asList(
+            BoundedJob.Outcome.TIMED_OUT_BEFORE_START, BoundedJob.Outcome.NOT_RUN))
+        {
+            boolean mayHaveMutated = tool.uiThreadBoundOutcomeMayHaveMutated(confirmed, outcome);
+            String answer = AbstractMetadataWriteTool.markUiThreadBoundOutcomeError(wroteIn(PROJECT),
+                ToolResult.error("UI work never ran").toJson(), mayHaveMutated); //$NON-NLS-1$
+            JsonObject result = JsonParser.parseString(answer).getAsJsonObject();
+
+            // These outcomes prove the UI body never ran. Adding either structural marker would
+            // make the harness perform a pointless reset and contradict the no-cleanup error text.
+            assertFalse(outcome + " must not be uncertain", //$NON-NLS-1$
+                result.has("mutationOutcomeUnknown")); //$NON-NLS-1$
+            assertFalse(outcome + " must not claim a commit", result.has("mutationCommitted")); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+    }
+
+    private static String boundedOutcomeAnswer(BoundedJob.Outcome outcome, WriteScope scope)
+    {
+        StubTool tool = new StubTool(new RecordingEnvironment(DiskExportState.DRAINED));
+        Map<String, String> confirmed = params(PROJECT);
+        confirmed.put("confirm", "true"); //$NON-NLS-1$ //$NON-NLS-2$
+        boolean mayHaveMutated = tool.uiThreadBoundOutcomeMayHaveMutated(confirmed, outcome);
+        return AbstractMetadataWriteTool.markUiThreadBoundOutcomeError(scope,
+            ToolResult.error("bounded UI work did not complete").toJson(), mayHaveMutated); //$NON-NLS-1$
     }
 
     /** Overrides ONLY what the base class leaves abstract, plus the seam - nothing else. */

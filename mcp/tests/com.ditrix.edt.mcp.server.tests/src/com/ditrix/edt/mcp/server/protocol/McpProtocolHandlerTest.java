@@ -11,14 +11,20 @@ import static org.junit.Assert.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import com.ditrix.edt.mcp.server.UserSignal;
+import com.ditrix.edt.mcp.server.UserSignal.SignalType;
+import com.ditrix.edt.mcp.server.protocol.jsonrpc.JsonRpcRequest;
+import com.ditrix.edt.mcp.server.protocol.jsonrpc.ToolCallResult;
 import com.ditrix.edt.mcp.server.tools.IMcpTool;
 import com.ditrix.edt.mcp.server.tools.McpToolRegistry;
 import com.ditrix.edt.mcp.server.utils.OutputSizeGuard;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -48,6 +54,114 @@ public class McpProtocolHandlerTest
     public void tearDown()
     {
         registry.clear();
+    }
+
+    @Test
+    public void testJsonUserSignalMessageIsTruncatedToTheBound()
+    {
+        String message = "x".repeat(McpProtocolHandler.MAX_USER_SIGNAL_MESSAGE_CHARS + 100); //$NON-NLS-1$
+
+        JsonObject augmented = JsonParser.parseString(handler.addUserSignalToJson("{\"value\":1}", //$NON-NLS-1$
+            new UserSignal(SignalType.CUSTOM, message))).getAsJsonObject();
+        String retained = augmented.getAsJsonObject("userSignal").get("message").getAsString(); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertEquals(McpProtocolHandler.MAX_USER_SIGNAL_MESSAGE_CHARS, retained.length());
+        assertTrue(retained, retained.endsWith("\u2026")); //$NON-NLS-1$
+        assertEquals(message.substring(0, McpProtocolHandler.MAX_USER_SIGNAL_MESSAGE_CHARS - 1)
+            + "\u2026", retained); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testMarkdownUserSignalIsBoundedByTheReservedAugmentation()
+    {
+        String markdown = "page"; //$NON-NLS-1$
+        String augmented = McpProtocolHandler.addUserSignalToMarkdown(markdown,
+            new UserSignal(SignalType.CUSTOM,
+                "x".repeat(McpProtocolHandler.MAX_USER_SIGNAL_MESSAGE_CHARS + 100))); //$NON-NLS-1$
+
+        assertEquals(markdown.length()
+            + McpProtocolHandler.MAX_MARKDOWN_USER_SIGNAL_AUGMENTATION_CHARS,
+            augmented.length());
+        assertTrue(augmented, augmented.endsWith("\u2026")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testJsonUserSignalTruncationNeverSplitsSurrogatePair()
+    {
+        String message = "x".repeat(McpProtocolHandler.MAX_USER_SIGNAL_MESSAGE_CHARS - 2) //$NON-NLS-1$
+            + "\uD83D\uDE00tail"; //$NON-NLS-1$
+
+        JsonObject augmented = JsonParser.parseString(handler.addUserSignalToJson("{\"value\":1}", //$NON-NLS-1$
+            new UserSignal(SignalType.CUSTOM, message))).getAsJsonObject();
+        String retained = augmented.getAsJsonObject("userSignal").get("message").getAsString(); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertEquals("x".repeat(McpProtocolHandler.MAX_USER_SIGNAL_MESSAGE_CHARS - 2) //$NON-NLS-1$
+            + "\u2026", retained); //$NON-NLS-1$
+        assertFalse(Character.isHighSurrogate(retained.charAt(retained.length() - 2)));
+        assertFalse(Character.isLowSurrogate(retained.charAt(retained.length() - 2)));
+    }
+
+    @Test
+    public void testJsonUserSignalPreservesRawHtmlSensitiveCharacters()
+    {
+        String original = "{\"xml\":\"<root>A&B</root>\",\"comparison\":\"x > y\"}"; //$NON-NLS-1$
+
+        String augmented = handler.addUserSignalToJson(original,
+            new UserSignal(SignalType.CUSTOM, "continue")); //$NON-NLS-1$
+
+        assertTrue(augmented, augmented.contains("<root>A&B</root>")); //$NON-NLS-1$
+        assertTrue(augmented, augmented.contains("x > y")); //$NON-NLS-1$
+        assertFalse(augmented, augmented.contains("\\u003c")); //$NON-NLS-1$
+        assertFalse(augmented, augmented.contains("\\u003e")); //$NON-NLS-1$
+        assertFalse(augmented, augmented.contains("\\u0026")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testJsonUserSignalChangesNoExistingParsedMembers()
+    {
+        String original = "{\"success\":true,\"xml\":\"<root>A&B</root>\"," //$NON-NLS-1$
+            + "\"nested\":{\"items\":[1,2,3]}}"; //$NON-NLS-1$
+        JsonObject expected = JsonParser.parseString(original).getAsJsonObject();
+
+        JsonObject augmented = JsonParser.parseString(handler.addUserSignalToJson(original,
+            new UserSignal(SignalType.BACKGROUND, "still running"))).getAsJsonObject(); //$NON-NLS-1$
+        JsonObject signal = augmented.remove("userSignal").getAsJsonObject(); //$NON-NLS-1$
+
+        assertEquals(expected, augmented);
+        assertEquals("BACKGROUND", signal.get("type").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("still running", signal.get("message").getAsString()); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    // === History timing ===
+
+    @Test
+    public void testTheOneArgumentOverloadTimesItsOwnParse()
+    {
+        DurationCapturingHandler timed = new DurationCapturingHandler();
+
+        timed.processRequest(buildJsonRpcRequest(1, "initialize", null)); //$NON-NLS-1$
+
+        // Lower bound only: load can only make this larger, never smaller.
+        assertTrue("the parse belongs inside the recorded duration, got " + timed.recordedDurationMs //$NON-NLS-1$
+            + "ms for a parse that alone takes " + DurationCapturingHandler.PARSE_MILLIS + "ms", //$NON-NLS-1$ //$NON-NLS-2$
+            timed.recordedDurationMs >= DurationCapturingHandler.PARSE_MILLIS);
+    }
+
+    @Test
+    public void testTheParsedOverloadTimesFromTheCallersClock()
+    {
+        // The transport parses first to decide the route, so it - not this method - knows when
+        // the exchange began. If the duration were taken here instead, everything the caller did
+        // before handing the request down would vanish from the history.
+        DurationCapturingHandler timed = new DurationCapturingHandler();
+        String request = buildJsonRpcRequest(1, "initialize", null); //$NON-NLS-1$
+        JsonRpcRequest parsed = timed.parse(request);
+        long startedFiveSecondsAgo = System.nanoTime() - TimeUnit.SECONDS.toNanos(5);
+
+        timed.processRequest(request, parsed, startedFiveSecondsAgo);
+
+        assertTrue("the caller's start must be what is measured, got " + timed.recordedDurationMs //$NON-NLS-1$
+            + "ms for an exchange that began 5000ms ago", timed.recordedDurationMs >= 5000L); //$NON-NLS-1$
     }
 
     // === Initialize ===
@@ -211,6 +325,107 @@ public class McpProtocolHandlerTest
         assertTrue("declared roots capability must be retrievable", caps.has("roots"));
         assertTrue("declared sampling capability must be retrievable", caps.has("sampling"));
         assertFalse("an undeclared capability must read absent", caps.has("elicitation"));
+    }
+
+    @Test
+    public void testAnOversizedCapabilitiesObjectIsNotRetained()
+    {
+        // Every open SESSION keeps the capabilities its client declared, so the size of that
+        // object is memory a caller can pin on its own word, multiplied by the session cap. A
+        // real capabilities object is a few hundred characters; one past the ceiling is treated
+        // exactly like a malformed one - the permissive default - rather than stored.
+        StringBuilder padding = new StringBuilder();
+        while (padding.length() < McpProtocolHandler.MAX_RETAINED_CAPABILITIES_CHARS)
+        {
+            padding.append('x');
+        }
+        String request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
+            + "\"params\":{\"protocolVersion\":\"2025-06-18\","
+            + "\"capabilities\":{\"roots\":{\"listChanged\":true},\"pad\":\"" + padding + "\"},"
+            + "\"clientInfo\":{\"name\":\"client\",\"version\":\"1.0.0\"}}}";
+        handler.processRequest(request);
+
+        ClientCapabilities caps = handler.getClientCapabilities();
+        assertFalse("an oversized capabilities object must not be retained", caps.isPresent());
+        assertFalse("and none of it may be readable afterwards", caps.has("roots"));
+        assertTrue("the refusal keeps the permissive default, it is not a failure",
+            caps.allowsStructuredContent());
+    }
+
+    @Test
+    public void testACapabilitiesObjectAtTheCeilingIsStillRetained()
+    {
+        // The other edge: the ceiling must admit anything a real client sends, so a capabilities
+        // object just under it is stored in full. Without this, a tightened limit could silently
+        // start discarding legitimate declarations and nothing would notice.
+        StringBuilder padding = new StringBuilder();
+        while (padding.length() < McpProtocolHandler.MAX_RETAINED_CAPABILITIES_CHARS - 200)
+        {
+            padding.append('x');
+        }
+        String request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
+            + "\"params\":{\"protocolVersion\":\"2025-06-18\","
+            + "\"capabilities\":{\"roots\":{\"listChanged\":true},\"pad\":\"" + padding + "\"},"
+            + "\"clientInfo\":{\"name\":\"client\",\"version\":\"1.0.0\"}}}";
+        handler.processRequest(request);
+
+        ClientCapabilities caps = handler.getClientCapabilities();
+        assertTrue("a capabilities object under the ceiling must still be stored", caps.isPresent());
+        assertTrue("and remain readable", caps.has("roots"));
+    }
+
+    @Test
+    public void testAnOversizedCapabilitiesObjectStillHonoursAnExplicitOptOut()
+    {
+        // The ceiling bounds what the server RETAINS. It must not also decide what the client
+        // MEANT: dropping the whole object would turn an explicit
+        // experimental.structuredContent=false into the permissive default, so the one client
+        // that refused structuredContent would be the one client that receives it.
+        StringBuilder padding = new StringBuilder();
+        while (padding.length() < McpProtocolHandler.MAX_RETAINED_CAPABILITIES_CHARS)
+        {
+            padding.append('x');
+        }
+        String request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
+            + "\"params\":{\"protocolVersion\":\"2025-06-18\","
+            + "\"capabilities\":{\"experimental\":{\"structuredContent\":false},"
+            + "\"roots\":{\"listChanged\":true},\"pad\":\"" + padding + "\"},"
+            + "\"clientInfo\":{\"name\":\"client\",\"version\":\"1.0.0\"}}}";
+        handler.processRequest(request);
+
+        ClientCapabilities caps = handler.getClientCapabilities();
+        assertFalse("an explicit opt-out must survive the size ceiling",
+            caps.allowsStructuredContent());
+        assertFalse("but the oversized declaration itself is still not retained",
+            caps.has("pad"));
+        assertFalse("nor anything else it declared alongside it", caps.has("roots"));
+    }
+
+    @Test
+    public void testWhatSurvivesAnOversizedDeclarationIsConstantSize()
+    {
+        // The other edge of the same change: honouring the opt-out must not become a way to
+        // retain the payload it arrived with. Whatever the client sent, what is kept is the
+        // flag - so the per-session memory cost stays constant no matter how large the
+        // declaration was.
+        StringBuilder padding = new StringBuilder();
+        while (padding.length() < McpProtocolHandler.MAX_RETAINED_CAPABILITIES_CHARS * 20)
+        {
+            padding.append('x');
+        }
+        String request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
+            + "\"params\":{\"protocolVersion\":\"2025-06-18\","
+            + "\"capabilities\":{\"experimental\":{\"structuredContent\":false,"
+            + "\"pad\":\"" + padding + "\"}},"
+            + "\"clientInfo\":{\"name\":\"client\",\"version\":\"1.0.0\"}}}";
+        handler.processRequest(request);
+
+        ClientCapabilities caps = handler.getClientCapabilities();
+        assertFalse("the opt-out is still honoured", caps.allowsStructuredContent());
+        assertNotNull("a distilled holder still exposes what it kept", caps.getRaw());
+        int retained = caps.getRaw().toString().length();
+        assertTrue("what is retained must not scale with the declaration: " + retained
+            + " characters", retained < 100);
     }
 
     @Test
@@ -411,6 +626,148 @@ public class McpProtocolHandlerTest
             assertNotNull("Tool should have description", tool.get("description"));
             assertNotNull("Tool should have inputSchema", tool.get("inputSchema"));
         }
+    }
+
+    @Test
+    public void testToolsListAdvertisesOutputSchemaWhenTheCallWillCarryStructuredContent()
+    {
+        // NO-REGRESSION and the positive half of the #574 invariant: by default the schema is
+        // advertised AND the call that follows carries the structured payload it describes.
+        registry.register(new StubSchemaJsonTool("schema_tool", "{\"value\":7}"));
+
+        JsonObject listed = firstListedTool(handler.processRequest(
+            buildJsonRpcRequest(1, "tools/list", null)));
+        assertNotNull("the default surface must advertise outputSchema", listed.get("outputSchema"));
+
+        JsonObject called = parseResponse(handler.processRequest(
+            buildToolCallRequest(2, "schema_tool", null))).getAsJsonObject("result");
+        assertNotNull("a declared outputSchema obliges structuredContent",
+            called.get("structuredContent"));
+    }
+
+    @Test
+    public void testToolsListWithholdsOutputSchemaWhenStructuredContentIsSuppressed()
+    {
+        // #574: a client that opted out of structuredContent gets its payload as text - so the
+        // schema describing that payload must NOT be advertised either. A client that enforces
+        // the MCP rule ("declared an output schema but returned no structured content") rejects
+        // the whole call with -32600 when the two disagree, which silently killed eight tools.
+        registry.register(new StubSchemaJsonTool("schema_tool", "{\"value\":7}"));
+
+        String initialize = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\","
+            + "\"params\":{\"protocolVersion\":\"2025-06-18\","
+            + "\"capabilities\":{\"experimental\":{\"structuredContent\":false}},"
+            + "\"clientInfo\":{\"name\":\"client\",\"version\":\"1.0.0\"}}}";
+        handler.processRequest(initialize);
+
+        JsonObject listed = firstListedTool(handler.processRequest(
+            buildJsonRpcRequest(2, "tools/list", null)));
+        assertNull("outputSchema must not be advertised when the call will not honour it",
+            listed.get("outputSchema"));
+
+        // The other half of the same invariant, asserted on the same session: the call really
+        // does withhold the structured payload, so withholding the schema was right.
+        JsonObject called = parseResponse(handler.processRequest(
+            buildToolCallRequest(3, "schema_tool", null))).getAsJsonObject("result");
+        assertNull("the opt-out must still suppress structuredContent",
+            called.get("structuredContent"));
+        // ... and the data is still delivered, in the text channel.
+        assertTrue("the payload must still be returned as text",
+            called.getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString()
+                .contains("value"));
+    }
+
+    @Test
+    public void testAdvertisedSchemaAndDeliveredStructuredContentAgreeOnEveryInput()
+    {
+        // THE invariant of #574, pinned mechanically rather than case by case: for every
+        // combination of the two inputs, tools/list advertises the outputSchema exactly when
+        // tools/call will produce structuredContent. Pinned on the pure functions because the
+        // plain-text half reads a preference store no unit test has (Activator is absent here),
+        // so only the capability half is reachable through processRequest.
+        ClientCapabilities optedOut = ClientCapabilities.from(JsonParser.parseString(
+            "{\"experimental\":{\"structuredContent\":false}}"));
+
+        for (ClientCapabilities caps : new ClientCapabilities[] {ClientCapabilities.ABSENT, optedOut})
+        {
+            for (boolean plainText : new boolean[] {false, true})
+            {
+                boolean delivers =
+                    McpProtocolHandler.jsonDeliveryFor(plainText, caps) != McpProtocolHandler.JsonDelivery.TEXT_ONLY;
+                assertEquals("schema/content disagree for plainText=" + plainText,
+                    McpProtocolHandler.advertisesOutputSchema(caps), delivers);
+            }
+        }
+    }
+
+    @Test
+    public void testPlainTextModeMovesThePayloadIntoTextWithoutTakingItOutOfStructured()
+    {
+        // The fix for the race the invariant above would otherwise still have: plain-text mode is
+        // a MUTABLE global preference, so if it decided the schema, a flip between a client's
+        // tools/list and its next call would break the promise, and no notification can reach a
+        // client that holds no SSE stream. It therefore does not decide it - it only moves the
+        // payload into the text channel, which is all issue #39 ever asked for.
+        assertEquals(McpProtocolHandler.JsonDelivery.TEXT_PAYLOAD_AND_STRUCTURED,
+            McpProtocolHandler.jsonDeliveryFor(true, ClientCapabilities.ABSENT));
+        assertEquals(McpProtocolHandler.JsonDelivery.STRUCTURED,
+            McpProtocolHandler.jsonDeliveryFor(false, ClientCapabilities.ABSENT));
+
+        // ... and the opt-out still wins over it, in both directions.
+        ClientCapabilities optedOut = ClientCapabilities.from(JsonParser.parseString(
+            "{\"experimental\":{\"structuredContent\":false}}"));
+        assertEquals(McpProtocolHandler.JsonDelivery.TEXT_ONLY,
+            McpProtocolHandler.jsonDeliveryFor(true, optedOut));
+        assertEquals(McpProtocolHandler.JsonDelivery.TEXT_ONLY,
+            McpProtocolHandler.jsonDeliveryFor(false, optedOut));
+    }
+
+    @Test
+    public void testPlainTextDeliveryCarriesTheWholePayloadInBothChannels()
+    {
+        // What TEXT_PAYLOAD_AND_STRUCTURED actually produces, asserted on the result builder the
+        // handler uses: the text channel gets the payload itself (not the "OK - keys: ..." digest
+        // that made #39's clients show nothing), and structuredContent carries it too.
+        JsonObject payload = JsonParser.parseString("{\"success\":true,\"value\":7}").getAsJsonObject();
+        ToolCallResult r = ToolCallResult.textWithStructured(payload, false);
+
+        String text = r.getContent().get(0).getText();
+        assertTrue("the text channel must carry the payload, not a digest", text.contains("\"value\""));
+        assertTrue("the text channel must carry the payload, not a digest", text.contains("7"));
+        assertNotNull("structuredContent must still be there", r.getStructuredContent());
+        assertNull("a success must not be flagged as an error", r.getIsError());
+
+        // A failed payload keeps isError, so moving it into the text channel cannot make a
+        // failure read as a success.
+        JsonObject failed = JsonParser.parseString(
+            "{\"success\":false,\"error\":\"bad param\"}").getAsJsonObject();
+        assertEquals(Boolean.TRUE, ToolCallResult.textWithStructured(failed, true).getIsError());
+    }
+
+    @Test
+    public void testARefusalIsFlaggedAsAnErrorAndCarriesNoStructuredContent()
+    {
+        // The shape the disabled-tool branch answers with. It matters to the #574 invariant
+        // because enablement is the one input to the outputSchema promise that can change UNDER
+        // a client: a JSON tool can be listed with its schema and switched off before the next
+        // call, and only an error result is exempt from the obligation the schema created.
+        ToolCallResult r = ToolCallResult.refusal("Tool 'x' is disabled by the user.");
+
+        assertEquals("a refusal must be flagged as an error", Boolean.TRUE, r.getIsError());
+        assertNull("a refusal carries no structured payload - nothing ran", r.getStructuredContent());
+        assertTrue("the reason must reach the text channel",
+            r.getContent().get(0).getText().contains("disabled by the user"));
+    }
+
+    /**
+     * The single tool entry of a tools/list response, so a test can assert what was advertised
+     * for it without restating the envelope.
+     */
+    private JsonObject firstListedTool(String response)
+    {
+        JsonArray tools = parseResponse(response).getAsJsonObject("result").getAsJsonArray("tools");
+        assertEquals("expected exactly one listed tool", 1, tools.size());
+        return tools.get(0).getAsJsonObject();
     }
 
     // === Invalid Requests ===
@@ -718,6 +1075,32 @@ public class McpProtocolHandlerTest
 
         JsonObject json = parseResponse(response);
         assertNotNull("Should return error for null tool name", json.get("error"));
+    }
+
+    /**
+     * An argument sent as JSON {@code null} does not reach the tool as an empty value - it does not
+     * reach it as a key at all.
+     * <p>
+     * Nothing asserted this until here, and a tool stands on it: {@code compare_configurations}
+     * decides between "release a comparison" and "start one" from whether
+     * {@code releaseComparisonId} is a KEY in the map this handler builds, so the map's treatment of
+     * an explicit null is what answers {@code releaseComparisonId: null}. It reads as an omission
+     * and starts a comparison, which is the intended reading of a null optional argument - but only
+     * for as long as this stays true, and it is not the tool's own code that keeps it true.
+     */
+    @Test
+    public void testAnArgumentSentAsJsonNullReachesTheToolAsNoKeyAtAll()
+    {
+        RecordingTool tool = new RecordingTool("recording_tool");
+        registry.register(tool);
+
+        handler.processRequest(buildToolCallRequest(1, "recording_tool",
+            "{\"kept\":\"x\",\"dropped\":null}"));
+
+        assertNotNull("the tool must have been called", tool.params);
+        assertTrue("a key sent with a value reaches the tool", tool.params.containsKey("kept"));
+        assertFalse("a key sent as JSON null must not reach the tool at all",
+            tool.params.containsKey("dropped"));
     }
 
     @Test
@@ -1259,6 +1642,34 @@ public class McpProtocolHandlerTest
         public String execute(Map<String, String> params) { return "{}"; }
     }
 
+    /** IMcpTool stub that keeps the parameter map it was handed, so the map itself can be asserted. */
+    private static class RecordingTool implements IMcpTool
+    {
+        private final String name;
+        private Map<String, String> params;
+
+        RecordingTool(String name)
+        {
+            this.name = name;
+        }
+
+        @Override
+        public String getName() { return name; }
+
+        @Override
+        public String getDescription() { return "records the params it receives"; }
+
+        @Override
+        public String getInputSchema() { return "{\"type\":\"object\"}"; }
+
+        @Override
+        public String execute(Map<String, String> params)
+        {
+            this.params = params;
+            return "{}";
+        }
+    }
+
     /**
      * IMcpTool stub with a JSON response type returning a fixed payload, used to
      * exercise the isError flagging on the tools/call JSON path.
@@ -1282,6 +1693,45 @@ public class McpProtocolHandlerTest
 
         @Override
         public String getInputSchema() { return "{\"type\":\"object\"}"; }
+
+        @Override
+        public ResponseType getResponseType() { return ResponseType.JSON; }
+
+        @Override
+        public String execute(Map<String, String> params) { return payload; }
+    }
+
+    /**
+     * A JSON stub that also DECLARES an {@code outputSchema}, like every real JSON tool does
+     * (enforced by {@code BuiltInToolOutputSchemaTest}). Needed to assert the tools/list
+     * &lt;-&gt; tools/call agreement of #574: the schema may be advertised only when the call
+     * that follows will actually carry {@code structuredContent}.
+     */
+    private static class StubSchemaJsonTool implements IMcpTool
+    {
+        private final String name;
+        private final String payload;
+
+        StubSchemaJsonTool(String name, String payload)
+        {
+            this.name = name;
+            this.payload = payload;
+        }
+
+        @Override
+        public String getName() { return name; }
+
+        @Override
+        public String getDescription() { return "stub json tool with an output schema"; }
+
+        @Override
+        public String getInputSchema() { return "{\"type\":\"object\"}"; }
+
+        @Override
+        public String getOutputSchema()
+        {
+            return "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}}}";
+        }
 
         @Override
         public ResponseType getResponseType() { return ResponseType.JSON; }
@@ -1357,6 +1807,39 @@ public class McpProtocolHandlerTest
         int recordCount()
         {
             return methods.size();
+        }
+    }
+
+    /**
+     * A handler that reports what the recorder was told, and whose parse is deliberately slow:
+     * the parse of a multi-megabyte tool call is real work, and the point of these two tests is
+     * that it lands INSIDE the duration the history reports, whichever overload was called.
+     */
+    private static class DurationCapturingHandler extends McpProtocolHandler
+    {
+        static final long PARSE_MILLIS = 60L;
+
+        long recordedDurationMs = -1L;
+
+        @Override
+        public JsonRpcRequest parse(String requestBody)
+        {
+            try
+            {
+                Thread.sleep(PARSE_MILLIS);
+            }
+            catch (InterruptedException e)
+            {
+                Thread.currentThread().interrupt();
+            }
+            return super.parse(requestBody);
+        }
+
+        @Override
+        void recordToHistory(String method, String toolName, String requestJson, String responseJson,
+            long durationMs)
+        {
+            recordedDurationMs = durationMs;
         }
     }
 

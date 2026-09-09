@@ -23,7 +23,9 @@ import com.ditrix.edt.mcp.server.protocol.GsonProvider;
 import com.ditrix.edt.mcp.server.protocol.McpKeys;
 import com.ditrix.edt.mcp.server.protocol.ToolResult;
 import com.ditrix.edt.mcp.server.tools.IMcpTool;
+import com.ditrix.edt.mcp.server.utils.BoundedJob;
 import com.ditrix.edt.mcp.server.utils.BuildUtils;
+import com.ditrix.edt.mcp.server.utils.MetadataScope;
 import com.ditrix.edt.mcp.server.utils.ProjectStateChecker;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -47,6 +49,140 @@ import com.google.gson.JsonParser;
  */
 public abstract class AbstractMetadataWriteTool implements IMcpTool
 {
+    /**
+     * Whether this tool's result depends on VALIDATION having finished, not just on the model.
+     * <p>
+     * The default is {@code false}: a create or a modify needs the metadata model, and MD is
+     * AFTER_SYNC, so the model gate proves what they use. Issue #495 is precisely about not making
+     * those wait hours for the validation checks.
+     *
+     * @return {@code true} to gate on the strict project state instead of the model state
+     */
+    protected boolean requiresFullDerivedData()
+    {
+        return false;
+    }
+
+    /**
+     * Optional caller-side bound for this tool's UI-thread work.
+     * <p>
+     * A value greater than zero runs the existing {@link Display#syncExec(Runnable)} hand-off in a
+     * {@link BoundedJob}. The bound limits only how long the MCP request waits: SWT work that has
+     * already entered the UI thread cannot be preempted and may finish after the request returns.
+     * Consequently, an opting-in tool must also override
+     * {@link #uiThreadBoundError(Map, long, BoundedJob.Outcome)} when it can give more precise state
+     * and recovery advice than the conservative base message.
+     * <p>
+     * The default is zero (unbounded) deliberately: every existing metadata writer used a direct
+     * {@code syncExec} before this seam existed, and enabling a deadline without tool-specific
+     * timeout semantics could both change its behaviour and misreport a mutation that EDT continues
+     * applying. Returning zero therefore preserves the original hand-off and export-wait ordering.
+     *
+     * @param params the raw tool arguments
+     * @return the caller-side bound in milliseconds, or zero to keep the direct unbounded hand-off
+     */
+    protected long uiThreadBoundMs(Map<String, String> params)
+    {
+        return 0L;
+    }
+
+    /**
+     * Whether an unfinished bounded UI-thread hand-off may have mutated the model.
+     * <p>
+     * The default fails closed for work that started and cannot be preempted: a timeout or an
+     * interrupted wait is uncertain even when this request's {@link WriteScope} has not yet observed
+     * a commit. It returns {@code false} only when the bounded job proves the work never ran. This
+     * deliberately favours uncertainty because under-reporting can hide a mutation from a structured
+     * caller, whereas over-reporting costs only a redundant re-read.
+     *
+     * @param params the raw tool arguments
+     * @param outcome how the bounded job stopped waiting
+     * @return {@code true} when the returned error must conservatively report a possible mutation
+     */
+    protected boolean uiThreadBoundOutcomeMayHaveMutated(Map<String, String> params,
+        BoundedJob.Outcome outcome)
+    {
+        switch (outcome)
+        {
+        case TIMED_OUT_BEFORE_START:
+        case NOT_RUN:
+        case COMPLETED:
+            return false;
+        case TIMED_OUT:
+        case INTERRUPTED:
+        default:
+            return true;
+        }
+    }
+
+    /**
+     * Translates a bounded UI hand-off that did not complete into an error result.
+     * <p>
+     * The final executor marks this result according to
+     * {@link #uiThreadBoundOutcomeMayHaveMutated(Map, BoundedJob.Outcome)}, preserving a recorded
+     * commit as the strongest known state. A queued job that our deadline kept from starting is
+     * reported separately because no UI work can later appear in that case.
+     *
+     * @param params the raw tool arguments
+     * @param timeoutMs the configured caller-side bound
+     * @param outcome how the bounded job stopped waiting
+     * @return a {@link ToolResult} error JSON
+     */
+    protected String uiThreadBoundError(Map<String, String> params, long timeoutMs,
+        BoundedJob.Outcome outcome)
+    {
+        long seconds = Math.max(1L, Math.round(timeoutMs / 1000.0));
+        switch (outcome)
+        {
+        case TIMED_OUT_BEFORE_START:
+            return ToolResult.error("The UI-thread work for '" + getName() + "' did not start within " //$NON-NLS-1$ //$NON-NLS-2$
+                + seconds + " seconds; cancelling the queued job kept it from starting, so no " //$NON-NLS-1$
+                + "cleanup is needed. Retry when EDT's job scheduler is less busy.").toJson(); //$NON-NLS-1$
+        case NOT_RUN:
+            return ToolResult.error("The UI-thread work for '" + getName() + "' was cancelled before " //$NON-NLS-1$ //$NON-NLS-2$
+                + "it started. Retry; if it keeps happening, EDT is shutting down or another " //$NON-NLS-1$
+                + "operation is cancelling background jobs.").toJson(); //$NON-NLS-1$
+        case INTERRUPTED:
+            return ToolResult.error("Waiting for the UI-thread work for '" + getName() //$NON-NLS-1$
+                + "' was interrupted. The wait ended, but UI-thread work cannot be preempted and " //$NON-NLS-1$
+                + "may still finish; inspect the tool's target before retrying.").toJson(); //$NON-NLS-1$
+        case TIMED_OUT:
+            return ToolResult.error("The UI-thread work for '" + getName() + "' did not finish within " //$NON-NLS-1$ //$NON-NLS-2$
+                + seconds + " seconds. The wait ended, but UI-thread work cannot be preempted and " //$NON-NLS-1$
+                + "may still finish; inspect the tool's target before retrying.").toJson(); //$NON-NLS-1$
+        case COMPLETED:
+        default:
+            return ToolResult.error("The UI-thread work for '" + getName() + "' ended in an " //$NON-NLS-1$ //$NON-NLS-2$
+                + "unrecognised bounded state (" + outcome + "). Inspect the tool's target before " //$NON-NLS-1$ //$NON-NLS-2$
+                + "retrying.").toJson(); //$NON-NLS-1$
+        }
+    }
+
+    /**
+     * Applies the structural mutation contract to an unfinished bounded hand-off.
+     * <p>
+     * Package-visible and independent of SWT so headless tests can drive the return-path decision.
+     * The scope stamp runs first: {@link ToolResult#markErrorWithUnknownMutationOutcome(String)}
+     * preserves an existing {@code mutationCommitted:true}, so a recorded write outranks the
+     * conservative uncertainty required for in-flight work. When the work provably never ran, the
+     * original error is returned without either marker.
+     *
+     * @param scope the request's write scope
+     * @param error the bounded-outcome error JSON
+     * @param outcomeMayHaveMutated whether the unfinished work may have mutated the model
+     * @return the structurally marked error JSON
+     */
+    static String markUiThreadBoundOutcomeError(WriteScope scope, String error,
+        boolean outcomeMayHaveMutated)
+    {
+        if (!outcomeMayHaveMutated)
+        {
+            return error;
+        }
+        return ToolResult.markErrorWithUnknownMutationOutcome(
+            scope.markErrorAfterRecordedWrite(error));
+    }
+
     /**
      * How long to wait for a write's {@code .mdo} export to reach disk before refusing.
      * <p>
@@ -92,7 +228,9 @@ public abstract class AbstractMetadataWriteTool implements IMcpTool
         // lookup. Only the transient BUILDING state is refused here; a missing/closed
         // project falls through to resolveProjectAndConfig's value-naming error. Checked
         // on the calling thread before marshalling onto the UI thread.
-        String building = ProjectStateChecker.buildingErrorOrNull(params.get("projectName")); //$NON-NLS-1$
+        String building = requiresFullDerivedData()
+            ? ProjectStateChecker.buildingErrorOrNull(params.get("projectName")) //$NON-NLS-1$
+            : ProjectStateChecker.modelBuildingErrorOrNull(params.get("projectName")); //$NON-NLS-1$
         if (building != null)
         {
             return ToolResult.error(building).toJson();
@@ -101,25 +239,63 @@ public abstract class AbstractMetadataWriteTool implements IMcpTool
         AtomicReference<String> resultRef = new AtomicReference<>();
         WriteScope scope = new WriteScope();
         Display display = PlatformUI.getWorkbench().getDisplay();
-        display.syncExec(() -> WriteScope.runWithScope(scope, () -> {
-            // Bound around the tool's own work so that submitting an export IS declaring one: the
-            // single place this plugin hands save tasks to the platform records into whatever scope
-            // is bound.
-            try
-            {
-                resultRef.set(executeOnUiThread(params));
-            }
-            catch (Exception e)
-            {
-                Activator.logError("Error in " + getName(), e); //$NON-NLS-1$
-                resultRef.set(ToolResult.error(e.getMessage()).toJson());
-            }
-        }));
+        try
+        {
+            Runnable uiThreadWork = () -> WriteScope.runWithScope(scope, () -> {
+                // Bound around the tool's own work so that submitting an export IS declaring one:
+                // the single place this plugin hands save tasks to the platform records into
+                // whatever scope is bound.
+                try
+                {
+                    resultRef.set(executeOnUiThread(params));
+                }
+                catch (Exception e)
+                {
+                    Activator.logError("Error in " + getName(), e); //$NON-NLS-1$
+                    resultRef.set(ToolResult.error(e.getMessage()).toJson());
+                }
+            });
 
-        // Deliberately AFTER syncExec returns, i.e. off the UI thread: the export runs on EDT's
-        // derived-data pipeline, and waiting for it while holding the UI thread is how a headless
-        // MCP call turns into a hung workbench.
-        return awaitDiskExport(params, resultRef.get(), scope);
+            long boundMs = uiThreadBoundMs(params);
+            if (boundMs > 0L)
+            {
+                BoundedJob.Result bounded = BoundedJob.run(getName() + ": UI-thread work", boundMs, //$NON-NLS-1$
+                    monitor -> display.syncExec(uiThreadWork));
+                if (bounded.getOutcome() != BoundedJob.Outcome.COMPLETED)
+                {
+                    // The caller is bounded, not SWT. The UI runnable may still record a commit or
+                    // finish later, so never proceed to the export barrier and never claim rollback.
+                    boolean outcomeMayHaveMutated =
+                        uiThreadBoundOutcomeMayHaveMutated(params, bounded.getOutcome());
+                    return markUiThreadBoundOutcomeError(scope,
+                        uiThreadBoundError(params, boundMs, bounded.getOutcome()),
+                        outcomeMayHaveMutated);
+                }
+                if (bounded.getFailure() != null)
+                {
+                    Activator.logError("Error finishing " + getName(), bounded.getFailure()); //$NON-NLS-1$
+                    return scope.markErrorAfterRecordedWrite(
+                        ToolResult.error(bounded.getFailure().getMessage()).toJson());
+                }
+            }
+            else
+            {
+                display.syncExec(uiThreadWork);
+            }
+
+            // Deliberately AFTER syncExec returns, i.e. off the UI thread: the export runs on EDT's
+            // derived-data pipeline, and waiting for it while holding the UI thread is how a
+            // headless MCP call turns into a hung workbench.
+            return awaitDiskExport(params, resultRef.get(), scope);
+        }
+        catch (RuntimeException e)
+        {
+            // Covers failures in the UI hand-off itself and in every post-commit export/refresh
+            // step. The scope, not this catch's position or wording, decides whether the mutation
+            // marker belongs on the answer.
+            Activator.logError("Error finishing " + getName(), e); //$NON-NLS-1$
+            return scope.markErrorAfterRecordedWrite(ToolResult.error(e.getMessage()).toJson());
+        }
     }
 
     /**
@@ -154,7 +330,10 @@ public abstract class AbstractMetadataWriteTool implements IMcpTool
         JsonObject success = successObject(result);
         if (success == null)
         {
-            return result;
+            // This is also the common return path for an exception caught by execute(). If the
+            // tool recorded a write before producing that ordinary error, derive the structural
+            // post-commit marker here instead of requiring every catch to remember a factory.
+            return scope.markErrorAfterRecordedWrite(result);
         }
         WriteScope.Verdict verdict = scope.verdict(defaultProjectsToAwait(params));
         if (verdict.written().isEmpty() && verdict.cascaded().isEmpty())
@@ -163,7 +342,8 @@ public abstract class AbstractMetadataWriteTool implements IMcpTool
             // must not start until the barrier is behind it, and skipping it here would silently
             // drop that work for exactly the calls that queued nothing. Reported as established:
             // this call put nothing in the queue, so there is nothing about it left unfinished.
-            return publish(verdict, refreshAfterExportAwait(params, result, true));
+            return scope.markErrorAfterRecordedWrite(
+                publish(verdict, refreshAfterExportAwait(params, result, true)));
         }
         // ONE budget for the whole set, not one per project: a cascade that touches the base and
         // three extensions must not be able to take four deadlines to answer.
@@ -179,7 +359,7 @@ public abstract class AbstractMetadataWriteTool implements IMcpTool
             BuildUtils.DiskExportState state = waitWithin(deadlineAtMs, projectName);
             if (state == BuildUtils.DiskExportState.PENDING)
             {
-                return exportNotConfirmed(projectName);
+                return scope.markErrorAfterRecordedWrite(exportNotConfirmed(projectName));
             }
             drainEstablished &= state == BuildUtils.DiskExportState.DRAINED;
         }
@@ -191,7 +371,8 @@ public abstract class AbstractMetadataWriteTool implements IMcpTool
             // extension and not - which is why the outcome only clears the "established" flag.
             drainEstablished &= waitWithin(deadlineAtMs, projectName) == BuildUtils.DiskExportState.DRAINED;
         }
-        return publish(verdict, refreshAfterExportAwait(params, result, drainEstablished));
+        return scope.markErrorAfterRecordedWrite(
+            publish(verdict, refreshAfterExportAwait(params, result, drainEstablished)));
     }
 
     /**
@@ -455,8 +636,18 @@ public abstract class AbstractMetadataWriteTool implements IMcpTool
     {
         /** Resolved project; non-null only when {@link #error} is null. */
         public IProject project;
-        /** Resolved configuration; non-null only when {@link #error} is null. */
+        /**
+         * Resolved configuration; non-null when {@link #error} is null - EXCEPT for an
+         * external-objects project linked to no base configuration, which resolves successfully
+         * with a null configuration and a non-null {@link #scope} (issue #309).
+         */
         public Configuration config;
+        /**
+         * The ROOT a metadata FQN resolves against for this project: the configuration, or an
+         * external-objects project's own root objects. Non-null whenever {@link #error} is null;
+         * use it - not {@link #config} - to resolve an FQN.
+         */
+        public MetadataScope scope;
         /** Non-null when resolution failed: a JSON error to return verbatim. */
         public String error;
 
@@ -474,6 +665,62 @@ public abstract class AbstractMetadataWriteTool implements IMcpTool
      * @return a {@link ProjectContext}; check {@link ProjectContext#error} first
      */
     protected ProjectContext resolveProjectAndConfig(String projectName)
+    {
+        return resolveProjectRoot(projectName, false);
+    }
+
+    /**
+     * Resolves the project and the ROOT a metadata FQN resolves against for it - the configuration,
+     * or an external-objects project's own root objects (issue #309).
+     *
+     * <p>The difference from {@link #resolveProjectAndConfig(String)} is one case: an
+     * external-objects project linked to NO base configuration resolves successfully here, with a
+     * null {@code config} and a usable {@code scope}. Only a tool that resolves everything through
+     * the scope may use this entry; one that dereferences {@code config} must keep the other, which
+     * still refuses that case rather than handing it a null.</p>
+     *
+     * @param projectName the project name from the tool parameters
+     * @return a {@link ProjectContext}; check {@link ProjectContext#error} first
+     */
+    protected ProjectContext resolveProjectAndScope(String projectName)
+    {
+        return resolveProjectRoot(projectName, true);
+    }
+
+    /**
+     * {@link #resolveProjectAndScope(String)} plus the TYPE/ROOT check: refuses when {@code fqn}
+     * names a type this project kind cannot hold at all - a configuration type addressed at an
+     * external-objects project, or a standalone external type addressed at a configuration.
+     *
+     * <p>Bound to context resolution ON PURPOSE. Every write tool has specialized dispatches
+     * that resolve their own context and read the {@code Configuration} directly, and each one
+     * that lacked this check answered about the WRONG project: a real owner found in the LINKED
+     * base configuration and then "Owner object not found in transaction" when its BM id was
+     * used in this project's model, or advice to "create it first" for something this project
+     * can never hold. Making the check part of GETTING the context is what stops the next such
+     * branch from having to remember it (issue #309).</p>
+     *
+     * @param projectName the project name from the tool parameters
+     * @param fqn the FQN this call addresses; {@code null}/empty checks nothing extra
+     * @return a {@link ProjectContext}; check {@link ProjectContext#error} first
+     */
+    protected ProjectContext resolveProjectAndScope(String projectName, String fqn)
+    {
+        ProjectContext ctx = resolveProjectAndScope(projectName);
+        if (ctx.hasError() || fqn == null || fqn.isEmpty())
+        {
+            return ctx;
+        }
+        String hint = ctx.scope.addressingHint(fqn);
+        if (!hint.isEmpty())
+        {
+            ctx.error = ToolResult.error("'" + fqn + "' cannot be addressed in project " //$NON-NLS-1$ //$NON-NLS-2$
+                + "'" + projectName + "'." + hint).toJson(); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        return ctx;
+    }
+
+    private ProjectContext resolveProjectRoot(String projectName, boolean allowNoConfiguration)
     {
         ProjectContext ctx = new ProjectContext();
 
@@ -495,14 +742,32 @@ public abstract class AbstractMetadataWriteTool implements IMcpTool
         }
 
         Configuration config = configProvider.getConfiguration(project);
-        if (config == null)
+        MetadataScope scope = MetadataScope.of(project, config);
+        // The project HAS no readable root (EDT never started it), so every FQN below would come
+        // back "not found" about a project that is simply not up. Refused on BOTH paths - see
+        // ProjectContext.unreadableExternalRootMessage.
+        if (scope.externalRootUnavailable())
         {
-            ctx.error = ToolResult.error("Could not get configuration for project: " + projectName).toJson(); //$NON-NLS-1$
+            ctx.error = ToolResult.error(
+                com.ditrix.edt.mcp.server.utils.ProjectContext.unreadableExternalRootMessage(
+                    projectName)).toJson();
+            return ctx;
+        }
+        // An EXTERNAL-OBJECTS project has no configuration of its own - its roots are its external
+        // data processors / reports, and the provider answers with the linked BASE configuration
+        // (null when there is none). A scope-driven caller can work without one; a caller that
+        // dereferences the configuration cannot, and is refused with the reason. Issue #309.
+        if (config == null && !(allowNoConfiguration && scope.isExternalObjects()))
+        {
+            ctx.error = ToolResult.error(
+                com.ditrix.edt.mcp.server.utils.ProjectContext.noConfigurationMessage(
+                    projectName, scope.isExternalObjects())).toJson();
             return ctx;
         }
 
         ctx.project = project;
         ctx.config = config;
+        ctx.scope = scope;
         return ctx;
     }
 

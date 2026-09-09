@@ -1,4 +1,4 @@
-﻿/**
+/**
  * MCP Server for EDT
  * Copyright (C) 2025 DitriX (https://github.com/DitriXNew)
  * Licensed under AGPL-3.0-or-later
@@ -379,7 +379,7 @@ public class UpdateDatabaseTool implements IMcpTool
     /**
      * Derives the update target for a runtime-client launch configuration that carries no
      * {@code ATTR_APPLICATION_ID} binding — the case {@code run_yaxunit_tests} and
-     * {@code debug_launch} already survive (they fall back to the project's default
+     * {@code launch} already survive (they fall back to the project's default
      * application through {@link LaunchLifecycleUtils#resolveDefaultApplicationId}) and this
      * tool used to refuse outright.
      *
@@ -633,6 +633,8 @@ public class UpdateDatabaseTool implements IMcpTool
     {
         boolean terminatedClient = false;
         boolean portsReassigned = false;
+        boolean updateApiEntered = false;
+        boolean updateApiReturned = false;
         try
         {
             ApplicationSupport.ManagerResult mr = ApplicationSupport.resolveManager(projectName);
@@ -711,7 +713,7 @@ public class UpdateDatabaseTool implements IMcpTool
             IProgressMonitor monitor = new NullProgressMonitor();
 
             // Free the infobase and apply the update under the SAME per-IB lock the launch path
-            // uses (LaunchLifecycleUtils.lockFor), so a concurrent run_yaxunit_tests / debug_launch
+            // uses (LaunchLifecycleUtils.lockFor), so a concurrent run_yaxunit_tests / launch
             // on this infobase cannot interleave its own terminate+update (two updates racing, or a
             // freshly-freed IB grabbed by a new client between the sweep and update()). A 1C client
             // THIS EDT launched holds the IB in exclusive use (the update fails) and caches the old
@@ -763,8 +765,10 @@ public class UpdateDatabaseTool implements IMcpTool
                         infobaseName, armedPortPolicy, armedServerName);
                     try
                     {
+                        updateApiEntered = true;
                         stateAfter = StandaloneServerStateRecovery.updateWithRecovery(appManager,
                             project, application, applicationId, updateType, context, monitor);
+                        updateApiReturned = true;
                     }
                     catch (ApplicationException ex)
                     {
@@ -824,27 +828,23 @@ public class UpdateDatabaseTool implements IMcpTool
         catch (ApplicationException e)
         {
             Activator.logError("Error updating database for application: " + applicationId, e); //$NON-NLS-1$
-            return buildApplicationErrorResult(e, projectName, applicationId, terminatedClient,
-                portsReassigned);
+            String error = buildApplicationErrorResult(e, projectName, applicationId,
+                terminatedClient, portsReassigned);
+            if (updateApiReturned || portsReassigned)
+            {
+                return ToolResult.markErrorAfterMutation(error);
+            }
+            return updateApiEntered ? ToolResult.markErrorWithUnknownMutationOutcome(error) : error;
         }
         catch (Exception e)
         {
             Activator.logError("Unexpected error during database update", e); //$NON-NLS-1$
-            ToolResult errorResult = ToolResult.error("Unexpected error: " + e.getMessage() //$NON-NLS-1$
-                + (portsReassigned
-                    ? " NOTE: before this failure EDT had already moved the standalone server to " //$NON-NLS-1$
-                        + "free ports and rewritten its configuration " //$NON-NLS-1$
-                        + "(standaloneServerPortConflict=reassign) — that change stands." //$NON-NLS-1$
-                    : "")); //$NON-NLS-1$
-            if (terminatedClient)
+            String error = buildUnexpectedErrorResult(e, terminatedClient, portsReassigned);
+            if (updateApiReturned || portsReassigned)
             {
-                errorResult.put(KEY_TERMINATED_CLIENT, true);
+                return ToolResult.markErrorAfterMutation(error);
             }
-            if (portsReassigned)
-            {
-                errorResult.put(KEY_PORTS_REASSIGNED, true);
-            }
-            return errorResult.toJson();
+            return updateApiEntered ? ToolResult.markErrorWithUnknownMutationOutcome(error) : error;
         }
     }
 
@@ -927,15 +927,61 @@ public class UpdateDatabaseTool implements IMcpTool
      * @param applicationId the target application (echoed for the caller's context)
      * @return the error payload
      */
+    /**
+     * The {@code Caused by} clause, or nothing when the failure carries no distinct deeper reason.
+     *
+     * <p>Platform messages end in a period only sometimes, and the hint that follows this clause is
+     * a sentence of its own - so without a terminator the three run together into
+     * {@code "... session open error Caused by: ... Auth fail If the infobase requires ..."}, which
+     * is the reading the caller has to do at the exact moment it is already confused. The clause
+     * therefore closes itself, and opens with one only when the selected message did not.
+     *
+     * <p>When there is no deeper reason this returns the empty string, so the message stays
+     * character-for-character what it was before the cause chain was surfaced.
+     *
+     * @param described the message {@code PlatformFailures.describe} selected
+     * @param rootCause the deeper diagnosis, possibly empty
+     * @return the clause to append, possibly empty
+     */
+    private static String causedBySegment(String described, String rootCause)
+    {
+        if (rootCause.isEmpty())
+        {
+            return ""; //$NON-NLS-1$
+        }
+        return (endsSentence(described) ? " Caused by: " : ". Caused by: ") + rootCause //$NON-NLS-1$ //$NON-NLS-2$
+            + (endsSentence(rootCause) ? "" : "."); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /** Whether this text already closes its own sentence. */
+    private static boolean endsSentence(String text)
+    {
+        if (text == null || text.isEmpty())
+        {
+            return true;
+        }
+        char last = text.charAt(text.length() - 1);
+        return last == '.' || last == '!' || last == '?' || last == ':';
+    }
+
     private static String portConflictError(LaunchUpdateDialogAutoConfirmer.ConflictWatch watch,
         String projectName, String applicationId, boolean terminatedClient)
     {
-        ToolResult result = ToolResult.error("Database update failed: " //$NON-NLS-1$
-            + LaunchUpdateDialogAutoConfirmer.portConflictError(watch.portConflictDetail(),
-                watch.portConflictReason())
-            + " The infobase was NOT changed.") //$NON-NLS-1$
-            .put(McpKeys.PROJECT, projectName)
+        ToolResult result = watch.portsReassigned()
+            ? ToolResult.errorAfterMutation("Database update failed: " //$NON-NLS-1$
+                + LaunchUpdateDialogAutoConfirmer.portConflictError(watch.portConflictDetail(),
+                    watch.portConflictReason())
+                + " The infobase was NOT changed, but the standalone-server configuration was.") //$NON-NLS-1$
+            : ToolResult.error("Database update failed: " //$NON-NLS-1$
+                + LaunchUpdateDialogAutoConfirmer.portConflictError(watch.portConflictDetail(),
+                    watch.portConflictReason())
+                + " The infobase was NOT changed."); //$NON-NLS-1$
+        result.put(McpKeys.PROJECT, projectName)
             .put(McpKeys.APPLICATION_ID, applicationId);
+        if (watch.portsReassigned())
+        {
+            result.put(KEY_PORTS_REASSIGNED, true);
+        }
         if (terminatedClient)
         {
             // The sweep runs BEFORE the server start, so a client can already be gone when the
@@ -962,13 +1008,13 @@ public class UpdateDatabaseTool implements IMcpTool
         ExternalInfobaseChangesPolicy externalChanges)
     {
         boolean reassigned = watch.portsReassigned();
-        ToolResult result = ToolResult.error(
-            ExternalInfobaseChangesPolicy.declinedUpdateError(externalChanges, watch.reason())
+        String message = ExternalInfobaseChangesPolicy.declinedUpdateError(externalChanges, watch.reason())
                 + (reassigned
                     ? " NOTE: EDT had already moved the standalone server to free ports and " //$NON-NLS-1$
                         + "rewritten its configuration " //$NON-NLS-1$
                         + "(standaloneServerPortConflict=reassign) — that change stands." //$NON-NLS-1$
-                    : "")); //$NON-NLS-1$
+                    : ""); //$NON-NLS-1$
+        ToolResult result = reassigned ? ToolResult.errorAfterMutation(message) : ToolResult.error(message);
         if (reassigned)
         {
             result.put(KEY_PORTS_REASSIGNED, true);
@@ -1104,12 +1150,16 @@ public class UpdateDatabaseTool implements IMcpTool
     {
         String internalInfoHint = describeInternalInfoHint(e);
         String hint = internalInfoHint.isEmpty() ? describeAuthHint(e) : internalInfoHint;
+        String described = PlatformFailures.describe(e);
+        String rootCause = PlatformFailures.rootCause(e);
         // PlatformFailures, not getMessage(): EDT reports failures as IStatus and only wraps them,
         // so the exception's own message is routinely empty (a cancelled server operation) or
         // generic while the reason sits in the status tree - and "Database update failed: " with
-        // nothing after it tells the caller nothing at all.
+        // nothing after it tells the caller nothing at all. The distinct terminal diagnosis is
+        // composed here rather than changing describe's widely used selection rule.
         ToolResult errorResult = ToolResult.error("Database update failed: " //$NON-NLS-1$
-            + PlatformFailures.describe(e) + describeInfobaseHolder(applicationId) + hint
+            + described + causedBySegment(described, rootCause)
+            + describeInfobaseHolder(applicationId) + hint
             + (portsReassigned
                 ? " NOTE: before this failure EDT had already moved the standalone server to free " //$NON-NLS-1$
                     + "ports and rewritten its configuration " //$NON-NLS-1$
@@ -1133,6 +1183,57 @@ public class UpdateDatabaseTool implements IMcpTool
             errorResult.put("causeType", e.getCause().getClass().getSimpleName()); //$NON-NLS-1$
         }
 
+        return errorResult.toJson();
+    }
+
+    /**
+     * Builds the JSON for a failure that is NOT an {@link ApplicationException} — anything the
+     * update path throws unexpectedly, including a {@link CoreException} whose reason lives in an
+     * {@code IStatus} tree rather than in the exception itself.
+     *
+     * <p>{@link PlatformFailures#describe} rather than {@code getMessage()}, for the same reason
+     * {@link #buildApplicationErrorResult} uses it: a platform exception routinely carries no
+     * message of its own, so the concatenation emitted the literal "Unexpected error: null" —
+     * from a tool that had just changed an infobase irreversibly. The helper walks the cause chain
+     * and the status tree instead, and when the failure genuinely carries no text anywhere it
+     * names the exception type and the status severity, which is itself the diagnosis.
+     *
+     * <p>The message ends with a NEXT STEP rather than the diagnosis alone. This tool changes an
+     * infobase irreversibly and the failure can land after a partial restructuring, so the one
+     * reaction the wording must not invite is an immediate blind re-call: the state is read back
+     * with {@code get_applications}, and the reason the platform did not put in the exception is
+     * in the EDT Error Log. The sentence comes AFTER the port-reassignment note, which keeps its
+     * place directly behind the failure description — that note is a claim about a change that
+     * already outlived this call, and nothing may push it away from the failure it qualifies.
+     *
+     * <p>Side-effect-free (the failure is already logged by the caller) and static, so the message
+     * can be pinned without a live EDT.
+     *
+     * @param e the failure to report (may be {@code null})
+     * @param terminatedClient whether this call terminated a running 1C client before failing
+     * @param portsReassigned whether EDT had already moved the standalone server to free ports
+     * @return the error JSON
+     */
+    static String buildUnexpectedErrorResult(Exception e, boolean terminatedClient,
+            boolean portsReassigned)
+    {
+        ToolResult errorResult = ToolResult.error("Unexpected error: " //$NON-NLS-1$
+            + PlatformFailures.describe(e)
+            + (portsReassigned
+                ? " NOTE: before this failure EDT had already moved the standalone server to " //$NON-NLS-1$
+                    + "free ports and rewritten its configuration " //$NON-NLS-1$
+                    + "(standaloneServerPortConflict=reassign) — that change stands." //$NON-NLS-1$
+                : "") //$NON-NLS-1$
+            + " The update may have applied partially, so do not retry blindly: check the actual " //$NON-NLS-1$
+            + "state with get_applications (updateState) and the EDT Error Log first."); //$NON-NLS-1$
+        if (terminatedClient)
+        {
+            errorResult.put(KEY_TERMINATED_CLIENT, true);
+        }
+        if (portsReassigned)
+        {
+            errorResult.put(KEY_PORTS_REASSIGNED, true);
+        }
         return errorResult.toJson();
     }
 

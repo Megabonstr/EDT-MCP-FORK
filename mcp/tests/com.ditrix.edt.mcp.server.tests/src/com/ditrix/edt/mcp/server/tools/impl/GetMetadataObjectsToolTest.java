@@ -12,12 +12,18 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertFalse;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.junit.Test;
 
+import com._1c.g5.v8.dt.metadata.mdclass.CommonModule;
+import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
+import com._1c.g5.v8.dt.metadata.mdclass.MdClassFactory;
 import com.ditrix.edt.mcp.server.tools.IMcpTool.ResponseType;
+import com.ditrix.edt.mcp.server.utils.MetadataTypeUtils;
 
 /**
  * Tests for {@link GetMetadataObjectsTool}.
@@ -25,10 +31,9 @@ import com.ditrix.edt.mcp.server.tools.IMcpTool.ResponseType;
  * Covers tool metadata (name/constant, response type, description, input schema,
  * output schema, result file name, guide) and the {@code projectName}
  * required-argument validation in {@code execute(Map)} that returns BEFORE the
- * first {@code PlatformUI.getWorkbench().getDisplay()} call. Everything past that
- * call (project/configuration resolution, the metadataType switch including the
- * "Unknown metadata type" branch, collection and formatting) needs a live EDT
- * workspace and is covered by the E2E suite.
+ * first {@code PlatformUI.getWorkbench().getDisplay()} call. Pure {@link CommonModule}
+ * matching and collection are covered directly; project/scope resolution and final
+ * formatting need a live EDT workspace and are covered by the E2E suite.
  */
 public class GetMetadataObjectsToolTest
 {
@@ -84,6 +89,7 @@ public class GetMetadataObjectsToolTest
         assertTrue(schema.contains("\"projectName\"")); //$NON-NLS-1$
         assertTrue(schema.contains("\"metadataType\"")); //$NON-NLS-1$
         assertTrue(schema.contains("\"nameFilter\"")); //$NON-NLS-1$
+        assertTrue(schema.contains("\"textFilter\"")); //$NON-NLS-1$
     }
 
     @Test
@@ -111,6 +117,8 @@ public class GetMetadataObjectsToolTest
         assertTrue("metadataType must NOT be required", //$NON-NLS-1$
             !requiredBlock.contains("\"metadataType\"")); //$NON-NLS-1$
         assertFalse("nameFilter must NOT be required", requiredBlock.contains("\"nameFilter\"")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("textFilter must NOT be required", //$NON-NLS-1$
+            requiredBlock.contains("\"textFilter\"")); //$NON-NLS-1$
         assertFalse("limit must NOT be required", requiredBlock.contains("\"limit\"")); //$NON-NLS-1$ //$NON-NLS-2$
         assertFalse("language must NOT be required", requiredBlock.contains("\"language\"")); //$NON-NLS-1$ //$NON-NLS-2$
     }
@@ -164,14 +172,16 @@ public class GetMetadataObjectsToolTest
     {
         // The exhaustive per-tool detail moved out of the always-loaded
         // description/schema and into the on-demand guide channel. The guide
-        // must be non-empty and still carry the migrated specifics (the full
-        // metadataType enum, the Name-only filter rule, the synonym-by-code note).
+        // must be non-empty and still carry the type vocabulary, both text-filter
+        // rules, and the module/subsystem boundaries.
         String guide = new GetMetadataObjectsTool().getGuide();
         assertNotNull(guide);
         assertTrue(guide.length() > 0);
-        assertTrue(guide.contains("eventSubscriptions")); //$NON-NLS-1$
+        assertTrue(guide.contains("HTTPService")); //$NON-NLS-1$
         assertTrue(guide.contains("nameFilter")); //$NON-NLS-1$
+        assertTrue(guide.contains("textFilter")); //$NON-NLS-1$
         assertTrue(guide.contains("ManagerModule")); //$NON-NLS-1$
+        assertTrue(guide.contains("list_subsystems")); //$NON-NLS-1$
     }
 
     // ==================== Argument validation (returns before any workbench access) ====================
@@ -229,29 +239,165 @@ public class GetMetadataObjectsToolTest
             !result.contains("Unknown metadata type")); //$NON-NLS-1$
     }
 
-    // ==================== issue #289: metadataType normalization (pure logic, no ======
-    // ==================== EDT/workbench dependency - see normalizeMetadataType javadoc)
+    @Test
+    public void testNameAndTextFiltersAreMutuallyExclusive()
+    {
+        Map<String, String> params = new HashMap<>();
+        params.put("projectName", "AnyProject"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("nameFilter", "DebtAdjustment"); //$NON-NLS-1$ //$NON-NLS-2$
+        params.put("textFilter", "Debt adjustment"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        String result = new GetMetadataObjectsTool().execute(params);
+
+        assertTrue(result.contains("\"success\":false")); //$NON-NLS-1$
+        assertTrue(result.contains("Use either nameFilter or textFilter, not both")); //$NON-NLS-1$
+        assertTrue(result.contains("nameFilter='DebtAdjustment'")); //$NON-NLS-1$
+        assertTrue(result.contains("textFilter='Debt adjustment'")); //$NON-NLS-1$
+        assertTrue(result.contains("programmatic Name")); //$NON-NLS-1$
+        assertTrue(result.contains("effective language")); //$NON-NLS-1$
+    }
+
+    // ==================== Name / localized-text matching (pure model logic) ====================
+
+    @Test
+    public void testTextFilterMatchesEnglishNameCaseInsensitively()
+    {
+        CommonModule object = metadataObject("DebtAdjustment", "Debt adjustment", //$NON-NLS-1$ //$NON-NLS-2$
+            "\u041A\u043E\u0440\u0440\u0435\u043A\u0442\u0438\u0440\u043E\u0432\u043A\u0430 " //$NON-NLS-1$
+            + "\u0434\u043E\u043B\u0433\u0430"); //$NON-NLS-1$
+
+        assertTrue(new GetMetadataObjectsTool().matches(object, "adjust", //$NON-NLS-1$
+            GetMetadataObjectsTool.FilterMode.TEXT, "en")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testTextFilterMatchesRussianNameCaseInsensitively()
+    {
+        String russianName = "\u0412\u0437\u0430\u0438\u043C\u043E\u0437\u0430\u0447\u0435\u0442"; //$NON-NLS-1$
+        CommonModule object = metadataObject(russianName, "Offset", //$NON-NLS-1$
+            "\u041A\u043E\u0440\u0440\u0435\u043A\u0442\u0438\u0440\u043E\u0432\u043A\u0430 " //$NON-NLS-1$
+            + "\u0434\u043E\u043B\u0433\u0430"); //$NON-NLS-1$
+
+        assertTrue(new GetMetadataObjectsTool().matches(object,
+            "\u0437\u0430\u0447\u0435\u0442", //$NON-NLS-1$
+            GetMetadataObjectsTool.FilterMode.TEXT, "en")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testTextFilterMatchesRussianSynonymInRussian()
+    {
+        CommonModule object = metadataObject("DebtOffset", "Debt offset", //$NON-NLS-1$ //$NON-NLS-2$
+            "\u041A\u043E\u0440\u0440\u0435\u043A\u0442\u0438\u0440\u043E\u0432\u043A\u0430 " //$NON-NLS-1$
+            + "\u0434\u043E\u043B\u0433\u0430"); //$NON-NLS-1$
+
+        assertTrue(new GetMetadataObjectsTool().matches(object,
+            "\u043A\u043E\u0440\u0440\u0435\u043A\u0442", //$NON-NLS-1$
+            GetMetadataObjectsTool.FilterMode.TEXT, "ru")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testTextFilterDoesNotMatchSynonymFromAnotherLanguage()
+    {
+        CommonModule object = metadataObject("DebtOffset", "Debt offset", //$NON-NLS-1$ //$NON-NLS-2$
+            "\u041A\u043E\u0440\u0440\u0435\u043A\u0442\u0438\u0440\u043E\u0432\u043A\u0430 " //$NON-NLS-1$
+            + "\u0434\u043E\u043B\u0433\u0430"); //$NON-NLS-1$
+
+        assertFalse(new GetMetadataObjectsTool().matches(object, "Debt offset", //$NON-NLS-1$
+            GetMetadataObjectsTool.FilterMode.TEXT, "ru")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testNameFilterRemainsNameOnly()
+    {
+        CommonModule object = metadataObject("DebtOffset", "Human caption", //$NON-NLS-1$ //$NON-NLS-2$
+            "\u041F\u043E\u0434\u043F\u0438\u0441\u044C"); //$NON-NLS-1$
+        GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
+
+        assertTrue(tool.matches(object, "offset", //$NON-NLS-1$
+            GetMetadataObjectsTool.FilterMode.NAME, "en")); //$NON-NLS-1$
+        assertFalse(tool.matches(object, "Human caption", //$NON-NLS-1$
+            GetMetadataObjectsTool.FilterMode.NAME, "en")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testTextFilterMatchingBothFieldsProducesOneResult()
+    {
+        CommonModule object = metadataObject("SharedCaption", "SharedCaption", //$NON-NLS-1$ //$NON-NLS-2$
+            "\u041E\u0431\u0449\u0430\u044F\u041F\u043E\u0434\u043F\u0438\u0441\u044C"); //$NON-NLS-1$
+        Configuration config = MdClassFactory.eINSTANCE.createConfiguration();
+        config.getCommonModules().add(object);
+        List<GetMetadataObjectsTool.MetadataInfo> rows = new ArrayList<>();
+
+        int total = new GetMetadataObjectsTool().collectMetadataObjects(config,
+            MetadataTypeUtils.resolve("CommonModule"), rows, "caption", //$NON-NLS-1$ //$NON-NLS-2$
+            GetMetadataObjectsTool.FilterMode.TEXT, 10, "en"); //$NON-NLS-1$
+
+        assertEquals("an object matching both fields must count once", 1, total); //$NON-NLS-1$
+        assertEquals("an object matching both fields must produce one row", 1, rows.size()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testEmptyOrAbsentTextFilterDoesNotFilter()
+    {
+        CommonModule object = metadataObject("AnyName", "Any caption", //$NON-NLS-1$ //$NON-NLS-2$
+            "\u041B\u044E\u0431\u0430\u044F\u041F\u043E\u0434\u043F\u0438\u0441\u044C"); //$NON-NLS-1$
+        GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
+
+        assertTrue(tool.matches(object, null, GetMetadataObjectsTool.FilterMode.TEXT, "ru")); //$NON-NLS-1$
+        assertTrue(tool.matches(object, "", GetMetadataObjectsTool.FilterMode.TEXT, "ru")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * The corner the shared resolver decides, pinned so it stays a decision: an object with NO
+     * synonym in the effective language falls back to its first non-empty one - exactly what the
+     * Synonym COLUMN displays for that row - so the filter can match text from another language.
+     * Matching what the caller can see in the table is the point; diverging from the column would
+     * make a visible row unfindable by the text printed in it.
+     */
+    @Test
+    public void testTextFilterFallsBackToTheDisplayedSynonymWhenTheLanguageHasNone()
+    {
+        CommonModule object = MdClassFactory.eINSTANCE.createCommonModule();
+        object.setName("DebtOffset"); //$NON-NLS-1$
+        object.getSynonym().put("ru", "\u041A\u043E\u0440\u0440\u0435\u043A\u0442\u0438\u0440\u043E\u0432\u043A\u0430 " //$NON-NLS-1$
+            + "\u0434\u043E\u043B\u0433\u0430"); //$NON-NLS-2$
+
+        assertTrue("an object whose only synonym is the one the column shows must be findable "
+            + "by that text", new GetMetadataObjectsTool().matches(object, "\u043A\u043E\u0440\u0440\u0435\u043A\u0442",
+                GetMetadataObjectsTool.FilterMode.TEXT, "en")); //$NON-NLS-1$
+    }
+
+    private static CommonModule metadataObject(String name, String englishSynonym,
+        String russianSynonym)
+    {
+        CommonModule object = MdClassFactory.eINSTANCE.createCommonModule();
+        object.setName(name);
+        object.getSynonym().put("en", englishSynonym); //$NON-NLS-1$
+        object.getSynonym().put("ru", russianSynonym); //$NON-NLS-1$
+        return object;
+    }
+
+    // ==================== metadataType normalization (pure logic, no workbench) ====================
 
     @Test
     public void testNormalizeMetadataTypeAcceptsLegacyCategoryTokens()
     {
         GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
         assertEquals("all", tool.normalizeMetadataType("all")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("scheduledjobs", tool.normalizeMetadataType("scheduledJobs")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("catalogs", tool.normalizeMetadataType("Catalogs")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("commonmodules", tool.normalizeMetadataType("COMMONMODULES")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("ScheduledJob", tool.normalizeMetadataType("scheduledjobs")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("Catalog", tool.normalizeMetadataType("catalogs")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("CommonModule", tool.normalizeMetadataType("commonmodules")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test
     public void testNormalizeMetadataTypeAcceptsEnglishTypeNameToken()
     {
-        // The core #289 fix: a standard FQN type-name token (singular, as an AI would
-        // naturally send it) now resolves to the same category as the legacy plural.
+        // Standard FQN type-name tokens and legacy plurals normalize to one canonical token.
         GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
-        assertEquals("scheduledjobs", tool.normalizeMetadataType("ScheduledJob")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("scheduledjobs", tool.normalizeMetadataType("scheduledjob")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("documents", tool.normalizeMetadataType("Document")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("commonmodules", tool.normalizeMetadataType("CommonModule")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("ScheduledJob", tool.normalizeMetadataType("ScheduledJob")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("ScheduledJob", tool.normalizeMetadataType("scheduledjob")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("Document", tool.normalizeMetadataType("Document")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("CommonModule", tool.normalizeMetadataType("CommonModule")); //$NON-NLS-1$ //$NON-NLS-2$
     }
 
     @Test
@@ -265,19 +411,31 @@ public class GetMetadataObjectsToolTest
         String ruCatalog = // Справочник (Catalog)
             "\u0421\u043F\u0440\u0430\u0432\u043E\u0447\u043D\u0438\u043A"; //$NON-NLS-1$
         GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
-        assertEquals("scheduledjobs", tool.normalizeMetadataType(ruScheduledJob)); //$NON-NLS-1$
-        assertEquals("catalogs", tool.normalizeMetadataType(ruCatalog)); //$NON-NLS-1$
+        assertEquals("ScheduledJob", tool.normalizeMetadataType(ruScheduledJob)); //$NON-NLS-1$
+        assertEquals("Catalog", tool.normalizeMetadataType(ruCatalog)); //$NON-NLS-1$
     }
 
     @Test
-    public void testNormalizeMetadataTypeRejectsRecognizedButUncollectedTypeName()
+    public void testNormalizeMetadataTypeAcceptsEveryPreviouslyUncollectedProbe()
     {
-        // MetadataTypeUtils recognizes far more type names than this tool has
-        // collectors for; a type it does NOT collect (Subsystem, Role) must fall
-        // through to "not recognized" here rather than silently mis-mapping.
         GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
-        assertNull(tool.normalizeMetadataType("Subsystem")); //$NON-NLS-1$
-        assertNull(tool.normalizeMetadataType("Role")); //$NON-NLS-1$
+        assertEquals("Role", tool.normalizeMetadataType("Role")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("Subsystem", tool.normalizeMetadataType("Subsystem")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("HTTPService", tool.normalizeMetadataType("HTTPService")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("ExternalDataSource", //$NON-NLS-1$
+            tool.normalizeMetadataType("ExternalDataSource")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testNormalizeMetadataTypeAcceptsRussianPreviouslyUncollectedProbes()
+    {
+        String ruRole = // Роль (Role)
+            "\u0420\u043E\u043B\u044C"; //$NON-NLS-1$
+        String ruSubsystem = // Подсистема (Subsystem)
+            "\u041F\u043E\u0434\u0441\u0438\u0441\u0442\u0435\u043C\u0430"; //$NON-NLS-1$
+        GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
+        assertEquals("Role", tool.normalizeMetadataType(ruRole)); //$NON-NLS-1$
+        assertEquals("Subsystem", tool.normalizeMetadataType(ruSubsystem)); //$NON-NLS-1$
     }
 
     @Test
@@ -285,15 +443,22 @@ public class GetMetadataObjectsToolTest
     {
         // XDTO packages had NO listing route at all, which left the XDTO tools' own advice
         // ("check the name with get_metadata_objects") pointing nowhere (issue #321).
-        // The configuration collection is "xDTOPackages", so the category token is its
-        // lowercase form - the type name resolves to the same category.
+        // The configuration collection is "xDTOPackages"; the shared resolver preserves
+        // its unusual DTO capitalization while returning the canonical singular type.
         String ruXdtoPackage = // ПакетXDTO (XDTOPackage)
             "\u041F\u0430\u043A\u0435\u0442XDTO"; //$NON-NLS-1$
         GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
-        assertEquals("xdtopackages", tool.normalizeMetadataType("xdtoPackages")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("xdtopackages", tool.normalizeMetadataType("XDTOPACKAGES")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("xdtopackages", tool.normalizeMetadataType("XDTOPackage")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertEquals("xdtopackages", tool.normalizeMetadataType(ruXdtoPackage)); //$NON-NLS-1$
+        assertEquals("XDTOPackage", tool.normalizeMetadataType("xdtopackages")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("XDTOPackage", tool.normalizeMetadataType("XDTOPACKAGES")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("XDTOPackage", tool.normalizeMetadataType("XDTOPackage")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("XDTOPackage", tool.normalizeMetadataType(ruXdtoPackage)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testNormalizeMetadataTypeRejectsStandaloneTypeOnConfigurationPath()
+    {
+        GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
+        assertNull(tool.normalizeMetadataType("ExternalDataProcessor")); //$NON-NLS-1$
     }
 
     @Test
@@ -303,5 +468,43 @@ public class GetMetadataObjectsToolTest
         assertNull(tool.normalizeMetadataType("bogusType_e2e")); //$NON-NLS-1$
         assertNull(tool.normalizeMetadataType("")); //$NON-NLS-1$
         assertNull(tool.normalizeMetadataType(null));
+    }
+
+    /**
+     * An EXTERNAL-OBJECTS project has its own two-entry vocabulary (issue #309): the category
+     * tokens and the bilingual type names both resolve, and nothing else does - a configuration
+     * category asked of such a project is refused rather than answered from the base
+     * configuration.
+     */
+    @Test
+    public void testNormalizeExternalMetadataTypeAcceptsItsOwnVocabulary()
+    {
+        GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
+        // ВнешняяОбработка / ВнешниеОтчеты
+        String ruProcessor = new String(new int[] { 0x0412, 0x043D, 0x0435, 0x0448, 0x043D, 0x044F,
+            0x044F, 0x041E, 0x0431, 0x0440, 0x0430, 0x0431, 0x043E, 0x0442, 0x043A, 0x0430 }, 0, 16);
+        String ruReports = new String(new int[] { 0x0412, 0x043D, 0x0435, 0x0448, 0x043D, 0x0438,
+            0x0435, 0x041E, 0x0442, 0x0447, 0x0435, 0x0442, 0x044B }, 0, 13);
+
+        assertEquals("all", tool.normalizeExternalMetadataType("all")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("externaldataprocessors", //$NON-NLS-1$
+            tool.normalizeExternalMetadataType("externalDataProcessors")); //$NON-NLS-1$
+        assertEquals("externaldataprocessors", //$NON-NLS-1$
+            tool.normalizeExternalMetadataType("ExternalDataProcessor")); //$NON-NLS-1$
+        assertEquals("externaldataprocessors", tool.normalizeExternalMetadataType(ruProcessor)); //$NON-NLS-1$
+        assertEquals("externalreports", tool.normalizeExternalMetadataType("ExternalReports")); //$NON-NLS-1$ //$NON-NLS-2$
+        assertEquals("externalreports", tool.normalizeExternalMetadataType(ruReports)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testNormalizeExternalMetadataTypeRejectsConfigurationCategories()
+    {
+        GetMetadataObjectsTool tool = new GetMetadataObjectsTool();
+        assertNull(tool.normalizeExternalMetadataType("catalogs")); //$NON-NLS-1$
+        assertNull(tool.normalizeExternalMetadataType("Document")); //$NON-NLS-1$
+        assertNull(tool.normalizeExternalMetadataType("dataProcessors")); //$NON-NLS-1$
+        assertNull(tool.normalizeExternalMetadataType("bogusType_e2e")); //$NON-NLS-1$
+        assertNull(tool.normalizeExternalMetadataType(""));  //$NON-NLS-1$
+        assertNull(tool.normalizeExternalMetadataType(null));
     }
 }

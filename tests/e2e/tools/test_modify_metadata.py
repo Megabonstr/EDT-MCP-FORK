@@ -1,7 +1,7 @@
 """
 e2e tests for modify_metadata (kind: write-metadata).
 
-modify_metadata sets properties of a metadata node (object or member) addressed by a
+modify_metadata sets properties of a metadata node (object, member, or managed-form root) addressed by a
 1C full-name FQN, as properties=[{name, value, language?}]. It folds the former
 set_metadata_property and adds VALIDATION: a non-assignable property is rejected WITH
 the list of assignable properties; an out-of-range enum value is rejected WITH the
@@ -15,7 +15,8 @@ get_metadata_details(assignable:true).
 
 reset: kind="write-metadata" -> reset_model() after each test.
 
-Fixture: Catalog.Catalog (attribute "Attribute"), CommonModule.Error/OK/Calc, ...
+Fixture: Catalog.Catalog (attribute "Attribute"), CommonModule.Error/OK/Calc/DrySignal,
+HTTPService.ProbeService (the only place a 64-bit property exists), ...
 """
 
 import os
@@ -47,8 +48,39 @@ from harness import (
 )
 
 
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_report_main_data_composition_schema_accepts_owned_template_member_reference():
+    report_name = "E2EMainDcsReference"
+    report = "Report." + report_name
+    template = report + ".Template.AgentMainSchema"
+    assert_ok(call("create_metadata", {"projectName": PROJECT, "fqn": report}),
+              "create report for main DCS reference")
+    wait_for_project_ready()
+    assert_ok(call("create_metadata", {"projectName": PROJECT, "fqn": template}),
+              "create the report-owned template member")
+    wait_for_project_ready()
+    assert_ok(call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": template,
+        "properties": [{"name": "templateType", "value": "DataCompositionSchema"}],
+    }), "declare the owned template as a DCS")
+    wait_for_project_ready()
+
+    wired = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": report,
+        "properties": [{"name": "mainDataCompositionSchema", "value": template}],
+    })
+    assert_ok(wired, "wire the report main schema to its BasicTemplate member")
+    assert "mainDataCompositionSchema" in (wired.structured.get("applied") or [])
+    poll_disk_contains("src/Reports/%s/%s.mdo" % (report_name, report_name),
+                       "AgentMainSchema",
+                       ctx="the report mainDataCompositionSchema reference must reach disk")
+
+
 # The fixture form every form-member test writes to.
 _ITEM_FORM = "src/Catalogs/Catalog/Forms/ItemForm/Form.form"
+_COMMON_FORM_MDO = "src/CommonForms/Form/Form.mdo"
 
 
 def _assignable_text(fqn):
@@ -70,6 +102,76 @@ def _first_enum_with_value(fqn):
             if allowed:
                 return cells[0], allowed[0]
     return None, None
+
+
+def _assignable_row(fqn, property_name):
+    """The assignable-table row for one property, or None when the property is absent."""
+    prefix = "| " + property_name + " |"
+    return next((line for line in _assignable_text(fqn).splitlines()
+                 if line.strip().startswith(prefix)), None)
+
+
+def _assert_header_picture_reached_disk(picture_name):
+    """Require one Form.form headerPicture element to name the expected picture target."""
+    form_root = ET.fromstring(read_disk(_ITEM_FORM))
+    header_pictures = [element for element in form_root.iter()
+                       if element.tag.rsplit("}", 1)[-1] == "headerPicture"]
+    assert header_pictures, "Form.form must contain a headerPicture element after the write"
+    serialized_headers = [ET.tostring(element, encoding="unicode")
+                          for element in header_pictures]
+    assert any(picture_name in element for element in serialized_headers), \
+        "a headerPicture element must name %s: %r" % (picture_name, serialized_headers)
+
+
+def _assert_picture_current_value(fqn, expected):
+    """Require the assignable row to expose exactly one feedable canonical picture value."""
+    row = _assignable_row(fqn, "headerPicture")
+    assert row is not None, "headerPicture must be listed by assignable:true after the write"
+    cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+    assert len(cells) >= 3, "headerPicture assignable row is malformed: %r" % row
+    assert cells[1] == "PICTURE", "headerPicture must expose the PICTURE value kind: %r" % row
+    assert cells[2] == expected, \
+        "headerPicture current value must be exactly %s, got: %r" % (expected, row)
+
+
+def _seed_web_service_parameter(stem):
+    """Create a WebService -> Operation -> Parameter chain and return the parameter FQN."""
+    service = stem + "Service"
+    operation = stem + "Operation"
+    parameter = stem + "Parameter"
+    service_fqn = "WebService." + service
+    operation_fqn = service_fqn + ".Operation." + operation
+    parameter_fqn = operation_fqn + ".Parameter." + parameter
+    for fqn, label in ((service_fqn, "WebService"),
+                       (operation_fqn, "Operation"),
+                       (parameter_fqn, "Parameter")):
+        assert_ok(call("create_metadata", {"projectName": PROJECT, "fqn": fqn}),
+                  "seed %s for QName modify: %s" % (label, fqn))
+        wait_for_project_ready()
+    return parameter_fqn
+
+
+def _seed_web_service(stem):
+    """Create one isolated WebService and return (FQN, on-disk .mdo path)."""
+    name = stem + "Service"
+    fqn = "WebService." + name
+    assert_ok(call("create_metadata", {"projectName": PROJECT, "fqn": fqn}),
+              "seed WebService for xdtoPackages: %s" % fqn)
+    wait_for_project_ready()
+    return fqn, "src/WebServices/%s/%s.mdo" % (name, name)
+
+
+def _seed_xdto_package(stem):
+    """Create one valid isolated configuration XDTOPackage and return its FQN."""
+    name = stem + "Package"
+    fqn = "XDTOPackage." + name
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": fqn,
+        "targetNamespace": "urn:e2e:%s" % stem,
+    }), "seed configuration XDTO package for xdtoPackages: %s" % fqn)
+    wait_for_project_ready()
+    return fqn
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -172,6 +274,339 @@ def test_get_metadata_details_assignable_lists_enum_allowed_values():
     assert_contains(text, "Assignable properties", "assignable mode must render the schema heading")
     assert_contains(text, "Allowed values", "assignable table must have an Allowed values column")
     assert "| ENUM |" in text, "an attribute must list at least one ENUM property: %r" % (text[:400],)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Contained mcore values — Picture (#497), QName and Value list (#450)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_set_form_field_header_picture_round_trips_symbolic_name():
+    fqn = "Catalog.Catalog.Form.ItemForm.Field.Description"
+    value = "StdPicture.Change"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": fqn,
+        "properties": [{"name": "headerPicture", "value": value}],
+    })
+    assert_ok(r, "set a standard header picture on a form field")
+    assert "headerPicture" in (r.structured.get("applied") or []), \
+        "headerPicture must be reported as applied: %r" % (r.structured,)
+
+    # DISK FIRST: modify_metadata submits/drains this form export. The containment element and
+    # symbolic target must both be present before another MCP call gets time to mask an early export.
+    assert_diff_contains("<headerPicture", ctx="the PictureRef containment must reach Form.form")
+    assert_diff_contains("Change", ctx="the standard picture target must reach Form.form")
+
+    row = _assignable_row(fqn, "headerPicture")
+    assert row is not None, "headerPicture must be listed by assignable:true after the write"
+    assert_contains(row, "PICTURE", "headerPicture must expose the PICTURE value kind")
+    assert_contains(row, value, "the current picture must round-trip as StdPicture.Change")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_set_form_field_extended_header_picture_reaches_disk_and_round_trips_prefix():
+    fqn = "Catalog.Catalog.Form.ItemForm.Field.Description"
+    value = "StdExtPicture.CopyToClipboard"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": fqn,
+        "properties": [{"name": "headerPicture", "value": value}],
+    })
+    assert_ok(r, "set an extended-standard header picture on a form field")
+    assert "headerPicture" in (r.structured.get("applied") or []), \
+        "headerPicture must be reported as applied: %r" % (r.structured,)
+
+    # DISK FIRST: CopyToClipboard exists only in the extended set, so finding it inside the
+    # headerPicture element proves that the full StdExtPicture provider key reached Form.form.
+    _assert_header_picture_reached_disk("CopyToClipboard")
+
+    # Exact equality pins the /Pictures/StdExt/ discriminator; StdPicture.CopyToClipboard is wrong.
+    _assert_picture_current_value(fqn, value)
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_standard_prefix_cannot_resolve_extended_only_picture_and_changes_nothing():
+    bad = "StdPicture.CopyToClipboard"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": "Catalog.Catalog.Form.ItemForm.Field.Description",
+        "properties": [{"name": "headerPicture", "value": bad}],
+    })
+    e = assert_error(r, "extended-only picture requested through the standard prefix")
+    assert_error_quality(e, names=[bad],
+                         suggests=["platform version", "StdPicture.<Name>",
+                                   "StdExtPicture.<Name>"],
+                         ctx="the two platform-picture prefixes are not interchangeable")
+    assert_no_diff("a rejected extended picture with the wrong prefix must change nothing")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_russian_extended_picture_name_round_trips_canonical_english_name():
+    fqn = "Catalog.Catalog.Form.ItemForm.Field.Description"
+    russian_value = "StdExtPicture.Копировать"
+    canonical_value = "StdExtPicture.CopyToClipboard"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": fqn,
+        "properties": [{"name": "headerPicture", "value": russian_value}],
+    })
+    assert_ok(r, "set an extended-standard picture through its Russian provider key")
+    assert "headerPicture" in (r.structured.get("applied") or []), \
+        "headerPicture must be reported as applied: %r" % (r.structured,)
+
+    # DISK FIRST: the bilingual provider key must serialize the same canonical platform target.
+    _assert_header_picture_reached_disk("CopyToClipboard")
+
+    _assert_picture_current_value(fqn, canonical_value)
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_set_form_field_common_picture_persists_reference_and_round_trips():
+    picture_name = "E2EHeaderCommonPicture"
+    picture_fqn = "CommonPicture." + picture_name
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": picture_fqn,
+    }), "seed a common picture for the form-field reference")
+    wait_for_project_ready()
+
+    field_fqn = "Catalog.Catalog.Form.ItemForm.Field.Description"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": field_fqn,
+        "properties": [{"name": "headerPicture", "value": picture_fqn}],
+    })
+    assert_ok(r, "set a common-picture header on a form field")
+    assert "headerPicture" in (r.structured.get("applied") or []), \
+        "headerPicture must be reported as applied: %r" % (r.structured,)
+
+    # DISK FIRST: require the exact CommonPicture reference inside headerPicture in Form.form.
+    # The same FQN also occurs in Configuration.mdo after create_metadata, so a global diff
+    # assertion would not prove that the PictureRef reached the form field.
+    poll_disk_contains(_ITEM_FORM, picture_fqn,
+                       ctx="the CommonPicture target must reach Form.form")
+    form_root = ET.fromstring(read_disk(_ITEM_FORM))
+    header_pictures = [element for element in form_root.iter()
+                       if element.tag.rsplit("}", 1)[-1] == "headerPicture"]
+    assert header_pictures, "Form.form must contain a headerPicture element after the write"
+    serialized_headers = [ET.tostring(element, encoding="unicode")
+                          for element in header_pictures]
+    assert any(picture_fqn in element for element in serialized_headers), \
+        "a headerPicture element must name %s: %r" % (picture_fqn, serialized_headers)
+
+    # A same-session read sees the resolved object installed by modify_metadata and misses the
+    # persisted-reference proxy shape. The scoped clean is the suite's measured disk re-import
+    # mechanism (also used for planted form data below): it restarts only TestConfiguration's
+    # project context and rebuilds this form from the Form.form asserted above.
+    wait_for_project_ready()
+    reloaded = call("clean_project", {"projectName": PROJECT})
+    assert_ok(reloaded, "reload the persisted CommonPicture reference from disk")
+    wait_for_project_ready()
+
+    row = _assignable_row(field_fqn, "headerPicture")
+    assert row is not None, "headerPicture must be listed by assignable:true after the write"
+    assert_contains(row, "PICTURE", "headerPicture must expose the PICTURE value kind")
+    assert_contains(row, picture_fqn,
+                    "the current picture must round-trip as CommonPicture.<Name>")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_malformed_form_field_picture_is_actionable_and_changes_nothing():
+    bad = "Change"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": "Catalog.Catalog.Form.ItemForm.Field.Description",
+        "properties": [{"name": "headerPicture", "value": bad}],
+    })
+    e = assert_error(r, "picture value without a symbolic type prefix")
+    assert_error_quality(e, names=[bad],
+                         suggests=["StdPicture.<Name>", "StdExtPicture.<Name>",
+                                   "CommonPicture.<Name>",
+                                   "list_common_pictures"],
+                         ctx="a malformed picture names all accepted forms and discovery tool")
+    assert_no_diff("a rejected picture value must not change the project")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_set_web_service_parameter_qname_round_trips_compact_form():
+    fqn = _seed_web_service_parameter("E2EQNameHappy")
+    value = "{http://www.w3.org/2001/XMLSchema}string"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": fqn,
+        "properties": [{"name": "xdtoValueType", "value": value}],
+    })
+    assert_ok(r, "set xdtoValueType on a web-service operation parameter")
+    assert "xdtoValueType" in (r.structured.get("applied") or []), \
+        "xdtoValueType must be reported as applied: %r" % (r.structured,)
+
+    # DISK FIRST: prove the nested QName, not merely the already-created Parameter name.
+    assert_diff_contains("<xdtoValueType", ctx="the QName containment must reach the WebService .mdo")
+    assert_diff_contains("http://www.w3.org/2001/XMLSchema",
+                         ctx="the QName namespace must reach the WebService .mdo")
+    assert_diff_contains("<name>string</name>",
+                         ctx="the QName local name must reach the WebService .mdo")
+
+    row = _assignable_row(fqn, "xdtoValueType")
+    assert row is not None, "xdtoValueType must be listed by assignable:true after the write"
+    assert_contains(row, "QNAME", "xdtoValueType must expose the QNAME value kind")
+    assert_contains(row, value, "the current QName must round-trip in compact form")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_bad_compact_web_service_parameter_qname_is_actionable_and_atomic():
+    fqn = _seed_web_service_parameter("E2EQNameBad")
+    before = tree_snapshot()
+    bad = "{http://www.w3.org/2001/XMLSchema}"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": fqn,
+        "properties": [{"name": "xdtoValueType", "value": bad}],
+    })
+    e = assert_error(r, "compact QName with no local name")
+    assert_error_quality(e, names=[bad],
+                         suggests=["{nsUri}name", "nsUri", "name"],
+                         ctx="a bad compact QName shows both required sides and accepted grammar")
+    assert_tree_unchanged(before, "a rejected QName must not change the seeded WebService tree")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_set_web_service_xdto_packages_mixes_reference_and_namespace_on_disk():
+    package_fqn = _seed_xdto_package("E2EXdtoPackagesHappy")
+    service_fqn, service_path = _seed_web_service("E2EXdtoPackagesHappy")
+    namespace = "http://v8.1c.ru/8.1/data/core"
+    expected = [package_fqn, namespace]
+
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": service_fqn,
+        "properties": [{"name": "xdtoPackages", "value": expected}],
+    })
+    assert_ok(r, "replace WebService.xdtoPackages with a mixed two-entry list")
+    assert "xdtoPackages" in (r.structured.get("applied") or []), \
+        "xdtoPackages must be reported as applied: %r" % (r.structured,)
+
+    # DISK FIRST: inspect only the service's own list, preserving order and checking each concrete
+    # mcore Value subtype. The package FQN also exists in Configuration.mdo, so a global diff match
+    # would not prove that the ReferenceValue reached WebService.xdtoPackages.
+    root = ET.fromstring(read_disk(service_path))
+    entries = [element for element in root.iter()
+               if element.tag.rsplit("}", 1)[-1] == "xdtoPackages"]
+    stored = []
+    for entry in entries:
+        value_type = next((value for key, value in entry.attrib.items()
+                           if key.rsplit("}", 1)[-1] == "type"), None)
+        value_node = next((child for child in entry
+                           if child.tag.rsplit("}", 1)[-1] == "value"), None)
+        stored.append((value_type, value_node.text if value_node is not None else None))
+    assert stored == [
+        ("core:ReferenceValue", package_fqn),
+        ("core:StringValue", namespace),
+    ], "WebService .mdo must preserve both concrete Value kinds and order: %r" % (stored,)
+
+    row = _assignable_row(service_fqn, "xdtoPackages")
+    assert row is not None, "xdtoPackages must be listed by assignable:true after the write"
+    assert_contains(row, "MCORE_VALUE_LIST",
+                    "xdtoPackages must expose the mcore Value-list kind")
+    assert_contains(row, package_fqn,
+                    "the configuration package must round-trip in the current array")
+    assert_contains(row, namespace,
+                    "the platform namespace must round-trip in the current array")
+    assert row.index(package_fqn) < row.index(namespace), \
+        "the current array must preserve caller order: %s" % row
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_common_form_use_purposes_array_and_scalar_replace_the_whole_list():
+    fqn = "CommonForm.Form"
+    array_value = ["MobileDevice"]
+
+    array_result = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": fqn,
+        "properties": [{"name": "usePurposes", "value": array_value}],
+    })
+    assert_ok(array_result, "replace CommonForm.usePurposes from a JSON array")
+    assert "usePurposes" in (array_result.structured.get("applied") or []), \
+        "the many-enum property must be reported as applied: %r" % (array_result.structured,)
+
+    # DISK FIRST: the fixture starts with both literals, so seeing exactly one proves replacement.
+    root = ET.fromstring(read_disk(_COMMON_FORM_MDO))
+    stored = [element.text for element in root.iter()
+              if element.tag.rsplit("}", 1)[-1] == "usePurposes"]
+    assert stored == array_value, \
+        "the array form must replace the persisted usePurposes list: %r" % (stored,)
+
+    row = _assignable_row(fqn, "usePurposes")
+    assert row is not None, "usePurposes must be listed by assignable:true after the array write"
+    assert_contains(row, "MANY_ENUM", "usePurposes must expose the many-enum value kind")
+    assert_contains(row, '["MobileDevice"]',
+                    "get_metadata_details must read back the array replacement")
+    assert_contains(row, "PersonalComputer, MobileDevice",
+                    "get_metadata_details must list every allowed enum literal")
+
+    scalar_value = "PersonalComputer"
+    scalar_result = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": fqn,
+        "properties": [{"name": "usePurposes", "value": scalar_value}],
+    })
+    # Before #510 this exact scalar call leaked a raw ClassCastException from EMF.
+    assert_ok(scalar_result, "replace CommonForm.usePurposes from the scalar shorthand")
+    assert_not_contains(scalar_result.text, "ClassCastException",
+                        "the former raw EMF failure must not reach the caller")
+    assert "usePurposes" in (scalar_result.structured.get("applied") or []), \
+        "the scalar shorthand must be reported as applied: %r" % (scalar_result.structured,)
+
+    root = ET.fromstring(read_disk(_COMMON_FORM_MDO))
+    stored = [element.text for element in root.iter()
+              if element.tag.rsplit("}", 1)[-1] == "usePurposes"]
+    assert stored == [scalar_value], \
+        "the scalar shorthand must replace, not append to, the persisted list: %r" % (stored,)
+
+    row = _assignable_row(fqn, "usePurposes")
+    assert row is not None, "usePurposes must be listed by assignable:true after the scalar write"
+    assert_contains(row, '["PersonalComputer"]',
+                    "get_metadata_details must show only the scalar replacement")
+    assert_not_contains(row, '["MobileDevice"]',
+                        "the earlier value must not survive as an appended entry")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_common_form_root_fallback_unknown_property_names_both_surfaces():
+    bad = "usePurpose"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": "CommonForm.Form",
+        "properties": [{"name": bad, "value": "MobileDevice"}],
+    })
+    e = assert_error(r, "property absent from both common-form surfaces")
+    assert_error_quality(e, names=[bad],
+                         suggests=["not assignable", "Assignable properties", "autoTitle",
+                                   "common form's own metadata properties",
+                                   "get_metadata_details", "same FQN"],
+                         ctx="the fallback refusal must identify both assignable surfaces")
+    assert_no_diff("a property rejected by both common-form surfaces must change nothing")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_bad_web_service_xdto_package_entry_is_actionable_and_atomic():
+    service_fqn, _ = _seed_web_service("E2EXdtoPackagesBad")
+    before = tree_snapshot()
+    bad = "XDTOPackege.Nope"
+
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": service_fqn,
+        "properties": [{"name": "xdtoPackages", "value": [bad]}],
+    })
+    e = assert_error(r, "misspelled XDTO-package type token")
+    assert_error_quality(e, names=[bad],
+                         suggests=["XDTOPackage.<Name>", "http://", "urn:"],
+                         ctx="a bad entry names both configuration and platform package forms")
+    assert_tree_unchanged(before,
+                          "a rejected xdtoPackages replacement must leave the seeded tree unchanged")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -292,6 +727,145 @@ def test_set_typed_ref_shorthand():
 
 
 @e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_event_subscription_source_accepts_concrete_document_object():
+    document_name = "E2EProducedSourceDocument"
+    subscription_name = "E2EProducedSourceSubscription"
+    subscription_fqn = "EventSubscription." + subscription_name
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": "Document." + document_name,
+    }), "seed the Document whose produced Object type will be assigned")
+    wait_for_project_ready()
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": subscription_fqn,
+    }), "seed the EventSubscription")
+    wait_for_project_ready()
+
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": subscription_fqn,
+        "properties": [{
+            "name": "source",
+            "value": {"types": [{"kind": "DocumentObject", "ref": document_name}]},
+        }],
+    })
+    assert_ok(r, "set EventSubscription.source to a concrete DocumentObject")
+    assert "source" in (r.structured.get("applied") or []), \
+        "source must be reported as applied: %r" % (r.structured,)
+
+    # DISK FIRST: compare the isolated <source>/<types> element by exact value. A substring check
+    # would accept a malformed token with an extra prefix/suffix, which is the regression this case
+    # must catch.
+    relative_path = "src/EventSubscriptions/%s/%s.mdo" % (
+        subscription_name, subscription_name)
+    root = ET.fromstring(read_disk(relative_path))
+    source_elements = [element for element in root.iter()
+                       if element.tag.rsplit("}", 1)[-1] == "source"]
+    assert len(source_elements) == 1, \
+        "the EventSubscription .mdo must contain exactly one <source>: %r" % source_elements
+    type_elements = [element for element in source_elements[0].iter()
+                     if element.tag.rsplit("}", 1)[-1] == "types"]
+    assert len(type_elements) == 1, \
+        "EventSubscription.source must contain exactly one <types>: %r" % type_elements
+    type_element = type_elements[0]
+    assert not type_element.attrib and len(type_element) == 0, \
+        "EventSubscription.source <types> must be a plain text element: %s" % \
+        ET.tostring(type_element, encoding="unicode")
+    expected_element = "<types>DocumentObject.%s</types>" % document_name
+    serialized_element = "<types>%s</types>" % (type_element.text or "")
+    assert serialized_element == expected_element, \
+        "EventSubscription.source must serialize exactly as %s, got %s" % (
+            expected_element, serialized_element)
+
+    row = _assignable_row(subscription_fqn, "source")
+    assert row is not None, "EventSubscription.source must remain readable through assignable:true"
+    assert_contains(row, "DocumentObject." + document_name,
+                    "MODEL read-back must expose the concrete produced type")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_event_subscription_source_accepts_abstract_nested_produced_type():
+    subscription_name = "E2ENestedProducedSourceSubscription"
+    subscription_fqn = "EventSubscription." + subscription_name
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": subscription_fqn,
+    }), "seed the EventSubscription")
+    wait_for_project_ready()
+
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": subscription_fqn,
+        "properties": [{
+            "name": "source",
+            "value": {"types": [
+                {"kind": "InformationRegisterRecordSet"},
+                {"kind": "RecalculationRecordSet"},
+            ]},
+        }],
+    })
+    assert_ok(r, "set EventSubscription.source to top-level and nested abstract RecordSets")
+    assert "source" in (r.structured.get("applied") or []), \
+        "source must be reported as applied: %r" % (r.structured,)
+
+    relative_path = "src/EventSubscriptions/%s/%s.mdo" % (
+        subscription_name, subscription_name)
+    root = ET.fromstring(read_disk(relative_path))
+    source_elements = [element for element in root.iter()
+                       if element.tag.rsplit("}", 1)[-1] == "source"]
+    assert len(source_elements) == 1, \
+        "the EventSubscription .mdo must contain exactly one <source>: %r" % source_elements
+    type_elements = [element for element in source_elements[0].iter()
+                     if element.tag.rsplit("}", 1)[-1] == "types"]
+    assert len(type_elements) == 2, \
+        "EventSubscription.source must contain exactly two <types>: %r" % type_elements
+    expected_types = {"InformationRegisterRecordSet", "RecalculationRecordSet"}
+    actual_types = {element.text or "" for element in type_elements}
+    assert actual_types == expected_types, \
+        "EventSubscription.source types must be %r, got %r" % (expected_types, actual_types)
+
+    row = _assignable_row(subscription_fqn, "source")
+    assert row is not None, "EventSubscription.source must remain readable through assignable:true"
+    assert_contains(row, "InformationRegisterRecordSet",
+                    "MODEL read-back must expose the top-level abstract produced type")
+    assert_contains(row, "RecalculationRecordSet",
+                    "MODEL read-back must expose the nested abstract produced type")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_persisted_catalog_attribute_refuses_concrete_document_object():
+    document_name = "E2EProducedStoredDocument"
+    attribute_name = "E2EProducedStoredAttribute"
+    attribute_fqn = "Catalog.Catalog.Attribute." + attribute_name
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": "Document." + document_name,
+    }), "seed the Document whose runtime Object type will be refused")
+    wait_for_project_ready()
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": attribute_fqn,
+    }), "seed the persisted Catalog attribute")
+    wait_for_project_ready()
+    before = tree_snapshot()
+
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": attribute_fqn,
+        "properties": [{
+            "name": "type",
+            "value": {"types": [{"kind": "DocumentObject", "ref": document_name}]},
+        }],
+    })
+    e = assert_error(r, "a runtime DocumentObject on a persisted Catalog attribute")
+    assert_error_quality(e, names=["DocumentObject"],
+                         suggests=["runtime object type", "event subscription", "source", "Ref"],
+                         ctx="the refusal must name the legal runtime and persisted alternatives")
+    assert_tree_unchanged(before, "a rejected produced type must not touch the persisted attribute")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
 def test_set_valuestorage_type():
     # ValueStorage - a platform simple type with no qualifiers.
     _seed_attr_and_set_type("E2ETypeVSAttr", {"types": [{"kind": "ValueStorage"}]})
@@ -309,9 +883,90 @@ def test_set_uuid_type():
 
 
 @e2e_test(tool="modify_metadata", kind="write-metadata")
-def test_set_type_unknown_kind_lists_valuestorage_and_uuid():
-    # An unrecognized kind is a clean error that now also names ValueStorage/UUID among the
-    # supported primitive kinds (issue #279).
+def test_set_stored_attribute_type_to_defined_type_reaches_disk_and_model():
+    defined_name = "E2EMoneyAmount"
+    defined_fqn = "DefinedType." + defined_name
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": defined_fqn,
+    }), "seed the reusable DefinedType")
+    wait_for_project_ready()
+
+    attr_name = "E2EDefinedTypeAttr"
+    attr_fqn = "Catalog.Catalog.Attribute." + attr_name
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": attr_fqn,
+    }), "seed the stored attribute that will use the DefinedType")
+    wait_for_project_ready()
+
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": attr_fqn,
+        "properties": [{
+            "name": "type",
+            "value": {"types": [{"kind": "DefinedType", "ref": defined_name}]},
+        }],
+    })
+    assert_ok(r, "set a stored attribute type to a DefinedType")
+    assert "type" in (r.structured.get("applied") or []), \
+        "the DefinedType must be reported as applied: %r" % (r.structured,)
+
+    # DISK FIRST: inspect the new attribute's own type block, not the DefinedType collection entry
+    # that create_metadata already wrote to Configuration.mdo.
+    catalog_root = ET.fromstring(read_disk("src/Catalogs/Catalog/Catalog.mdo"))
+    attribute_blocks = []
+    for element in catalog_root:
+        if element.tag.rsplit("}", 1)[-1] != "attributes":
+            continue
+        names = [child.text for child in element
+                 if child.tag.rsplit("}", 1)[-1] == "name"]
+        if names == [attr_name]:
+            attribute_blocks.append(element)
+    assert len(attribute_blocks) == 1, \
+        "Catalog.mdo must contain exactly one attribute named %s" % attr_name
+    stored_types = [element.text for element in attribute_blocks[0].iter()
+                    if element.tag.rsplit("}", 1)[-1] == "types"]
+    assert stored_types == [defined_fqn], \
+        "the attribute type must store the DefinedType TypeSet: %r" % stored_types
+
+    row = _assignable_row(attr_fqn, "type")
+    assert row is not None, "the attribute type must remain readable through assignable:true"
+    assert_contains(row, defined_fqn,
+                    "the current type must round-trip as the feedable DefinedType FQN")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_unknown_defined_type_name_is_actionable_and_changes_nothing():
+    attr_name = "E2EUnknownDefinedTypeAttr"
+    attr_fqn = "Catalog.Catalog.Attribute." + attr_name
+    assert_ok(call("create_metadata", {
+        "projectName": PROJECT,
+        "fqn": attr_fqn,
+    }), "seed the attribute for an unknown DefinedType refusal")
+    wait_for_project_ready()
+    before = tree_snapshot()
+
+    bad_name = "NoSuchDefinedTypeE2E"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": attr_fqn,
+        "properties": [{
+            "name": "type",
+            "value": {"types": [{"kind": "DefinedType", "ref": bad_name}]},
+        }],
+    })
+    e = assert_error(r, "unknown DefinedType name")
+    assert_error_quality(e, names=[bad_name], suggests=["DefinedType", "check", "exists"],
+                         ctx="an unknown DefinedType must name the target and explain the fix")
+    assert_tree_unchanged(before,
+                          "a rejected DefinedType assignment must not change the seeded tree")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_set_type_unknown_kind_lists_valuestorage_uuid_and_defined_type():
+    # An unrecognized kind is a clean error that names ValueStorage/UUID and the reusable
+    # DefinedType grammar among the accepted forms.
     attr = "E2ETypeUnknownKindAttr"
     cr = call("create_metadata", {"projectName": PROJECT, "fqn": "Catalog.Catalog.Attribute." + attr})
     assert_ok(cr, "seed attribute")
@@ -321,8 +976,9 @@ def test_set_type_unknown_kind_lists_valuestorage_and_uuid():
         "properties": [{"name": "type", "value": {"types": [{"kind": "NotAKind_zzz"}]}}],
     })
     e = assert_error(r, "unknown type kind")
-    assert_error_quality(e, names=["NotAKind_zzz"], suggests=["ValueStorage", "UUID"],
-                         ctx="the unknown-kind error must list ValueStorage/UUID among the supported kinds")
+    assert_error_quality(e, names=["NotAKind_zzz"],
+                         suggests=["ValueStorage", "UUID", "DefinedType"],
+                         ctx="the unknown-kind error must list the supported reusable type forms")
 
 
 @e2e_test(tool="modify_metadata", kind="write-metadata")
@@ -465,6 +1121,74 @@ def test_set_type_malformed_spec_is_error():
     e = assert_error(r, "malformed type spec")
     assert_error_quality(e, suggests=["types", "kind"],
                          ctx="a non-structured type value is rejected with the expected shape")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Happy — FORM MODEL ROOT (the form:Form object serialized in Form.form)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_modify_form_root_auto_title_persists_and_reads_back():
+    fqn = "Catalog.Catalog.Form.ItemForm"
+    root_title = "E2E managed form root"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": fqn,
+        "properties": [
+            {"name": "autoTitle", "value": False},
+            {"name": "title", "value": root_title, "language": "en"},
+        ],
+    })
+    assert_ok(r, "set autoTitle on the managed-form model root")
+    assert r.structured.get("action") == "modified", \
+        "the root write must use the ordinary modified result shape: %r" % (r.structured,)
+    assert r.structured.get("fqn") == fqn, \
+        "the root write must echo its normalized FQN: %r" % (r.structured,)
+    assert "autoTitle" in (r.structured.get("applied") or []), \
+        "autoTitle must be reported as applied: %r" % (r.structured,)
+    assert "title" in (r.structured.get("applied") or []), \
+        "the localized root title must be reported as applied: %r" % (r.structured,)
+    assert r.structured.get("language") == "en", \
+        "the root title must report the language CODE used: %r" % (r.structured,)
+    assert r.structured.get("localesMissing") == [], \
+        "the fixture's only in-use locale was filled by this root-title write: %r" % (r.structured,)
+
+    # DISK FIRST: modify_metadata submits and drains this exact Form.form export. Turning autoTitle
+    # OFF is visible as the REMOVAL of the fixture's <autoTitle>true</autoTitle>, not as an added
+    # <autoTitle>false</autoTitle>: autoTitle is a primitive boolean whose metamodel default is
+    # false, and EMF does not serialize a default-valued attribute. Asserting the added element
+    # would assert a shape the serializer cannot produce.
+    poll_diff_contains("autoTitle",
+                       ctx="the root autoTitle change must reach Form.form before read-back")
+    assert "<autoTitle>" not in read_disk(_ITEM_FORM), \
+        "turning the root autoTitle off must remove the element from Form.form"
+    assert_diff_contains(root_title,
+                         ctx="the localized root title must reach Form.form before read-back")
+
+    row = _assignable_row(fqn, "autoTitle")
+    assert row is not None, "the form-root assignable view must list autoTitle"
+    assert_contains(row, "| BOOLEAN | false |",
+                    "get_metadata_details(assignable) must read the changed root value back")
+    title_row = _assignable_row(fqn, "title")
+    assert title_row is not None, "the form-root assignable view must list title"
+    assert_contains(title_row, root_title,
+                    "get_metadata_details(assignable) must read the localized root title back")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_modify_form_root_unknown_property_lists_assignable_root_properties():
+    bad = "definitelyNotARootProp_zz549"
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": "Catalog.Catalog.Form.ItemForm",
+        "properties": [{"name": bad, "value": True}],
+    })
+    e = assert_error(r, "unknown managed-form root property")
+    assert_error_quality(e, names=[bad],
+                         suggests=["not assignable", "Assignable properties",
+                                   "autoTitle", "assignable:true"],
+                         ctx="an unknown root property must name the real form-root surface")
+    assert_no_diff("a rejected form-root property must not touch Form.form")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -763,6 +1487,23 @@ def test_modify_form_attribute_type():
         "the type alias must apply to valueType: %r" % (r.structured,)
     poll_diff_contains("precision",
                        ctx="the form attribute's Number(10,2) type must land in the .form on disk")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_modify_form_attribute_concrete_produced_type():
+    attr = "MFProducedCatalogObject"
+    _seed_form_attribute(attr)
+    r = call("modify_metadata", {
+        "projectName": PROJECT,
+        "fqn": "Catalog.Catalog.Form.ItemForm.Attribute." + attr,
+        "properties": [{"name": "type", "value": {
+            "types": [{"kind": "CatalogObject", "ref": "Catalog"}]}}],
+    })
+    assert_ok(r, "set a form attribute's type to a concrete CatalogObject")
+    assert "valueType" in (r.structured.get("applied") or []), \
+        "the type alias must apply the concrete produced type to valueType: %r" % (r.structured,)
+    poll_diff_contains("<types>CatalogObject.Catalog</types>",
+                       ctx="the concrete produced type must land in the form's .form on disk")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2036,7 +2777,14 @@ def test_scheduled_job_method_name_accepts_existing_exported_server_method():
     assert r.structured.get("action") == "modified", "must report modified: %r" % (r.structured,)
     assert "methodName" in (r.structured.get("applied") or []), \
         "methodName must be applied: %r" % (r.structured,)
-    poll_diff_contains("Calc.Add", ctx="the methodName must land in the ScheduledJob .mdo on disk")
+    # The EXACT stored form, not a substring of it. A bare "Calc.Add" is accepted as INPUT and
+    # normalized to the platform's three-segment form; the short form serialized verbatim is what
+    # made an extension unloadable ("reference to an unknown method"). Asserting the substring
+    # "Calc.Add" is what let that ship - it matches both spellings.
+    poll_diff_contains("<methodName>CommonModule.Calc.Add</methodName>",
+                       ctx="the methodName must land in the .mdo in the platform's stored form")
+    assert "<methodName>Calc.Add</methodName>" not in diff(), \
+        "the short form must never reach the .mdo: %s" % diff()[:500]
 
 
 @e2e_test(tool="modify_metadata", kind="write-metadata")
@@ -2651,3 +3399,47 @@ def test_modify_accepts_a_locale_the_same_batch_declares():
     e2 = assert_error(removed, "the code the batch removes must be refused")
     assert_error_quality(e2, names=["fr"], suggests=["it"],
                          ctx="the error must name the removed code and list the post-batch ones")
+
+
+# ===== a 64-bit (ELong) property (#451) ======================================================
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_long_property_is_advertised_as_long_and_accepts_64_bit_values():
+    # WebService.sessionMaxAge and HTTPService.sessionMaxAge are the ONLY long-typed properties in
+    # the whole mdclass metamodel, so this fixture HTTP service is the only place the long path can
+    # be exercised at all. Before the fix the property was not merely mistyped - it was unsettable:
+    # the prepared value was an Integer and EMF refused the eSet outright with "The value of type
+    # 'class java.lang.Integer' must be of type 'class java.lang.Long'".
+    fqn = "HTTPService.ProbeService"
+    assert_contains(_assignable_text(fqn), "| sessionMaxAge | LONG |",
+                    "a 64-bit property must be advertised as LONG, not INTEGER")
+
+    r = call("modify_metadata", {"projectName": PROJECT, "fqn": fqn,
+                                 "properties": [{"name": "sessionMaxAge", "value": "600"}]})
+    assert_ok(r, "set sessionMaxAge to an in-range value")
+    assert_contains(_assignable_text(fqn), "| sessionMaxAge | LONG | 600 |",
+                    "the model must read back the value that was just set")
+
+    # A value no int can hold. The old range guard refused it as "not a valid integer", so this is
+    # the assertion that pins the widened range rather than only the wrapper type.
+    beyond_int = str(2 ** 31)
+    r = call("modify_metadata", {"projectName": PROJECT, "fqn": fqn,
+                                 "properties": [{"name": "sessionMaxAge", "value": beyond_int}]})
+    assert_ok(r, "set sessionMaxAge beyond the 32-bit range")
+    assert_contains(_assignable_text(fqn), "| sessionMaxAge | LONG | %s |" % beyond_int,
+                    "a 64-bit value must survive the round-trip through the model")
+    poll_disk_contains("src/HTTPServices/ProbeService/ProbeService.mdo",
+                       "<sessionMaxAge>%s</sessionMaxAge>" % beyond_int,
+                       ctx="the 64-bit value must reach the exported .mdo, not only the model")
+
+
+@e2e_test(tool="modify_metadata", kind="write-metadata")
+def test_fractional_value_for_a_long_property_is_refused_actionably():
+    # The widened range must not turn into "anything numeric goes": a fractional value is still not
+    # a whole 64-bit number, and the error has to say which kind of number is expected.
+    r = call("modify_metadata", {"projectName": PROJECT, "fqn": "HTTPService.ProbeService",
+                                 "properties": [{"name": "sessionMaxAge", "value": "1.5"}]})
+    assert_error(r, "a fractional value is not a whole 64-bit number")
+    assert_contains(r.text, "64-bit", "the error must name the kind of number it expected")
+    assert_no_diff("a refused property must not touch the project on disk")

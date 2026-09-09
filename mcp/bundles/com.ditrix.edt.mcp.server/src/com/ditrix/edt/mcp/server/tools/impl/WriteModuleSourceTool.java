@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IFolder;
@@ -33,6 +34,7 @@ import com.ditrix.edt.mcp.server.utils.ProjectContext;
 import com.ditrix.edt.mcp.server.utils.MetadataTypeUtils;
 import com.ditrix.edt.mcp.server.utils.BslModuleUtils;
 import com.ditrix.edt.mcp.server.utils.BslSyntaxChecker;
+import com.ditrix.edt.mcp.server.utils.InvalidFileCharacters;
 
 /**
  * Tool to write BSL source code to 1C metadata object modules.
@@ -105,6 +107,13 @@ public class WriteModuleSourceTool implements IMcpTool
                 "Command name; required when moduleType=CommandModule (e.g. 'FillByTemplate').") //$NON-NLS-1$
             .booleanProperty("skipSyntaxCheck", //$NON-NLS-1$
                 "Skip the BSL syntax check (default false).") //$NON-NLS-1$
+            .booleanProperty("normalizeInvalidCharacters", //$NON-NLS-1$
+                "Replace the characters the 1C standard InvalidCharacterInFile forbids in the " //$NON-NLS-1$
+                + "SOURCE you supply - en/em/figure dash, horizontal bar and typographic minus " //$NON-NLS-1$
+                + "become '-', a no-break space becomes a space, a soft hyphen is dropped " //$NON-NLS-1$
+                + "(default true). They are invisible in a diff and read exactly like their ASCII " //$NON-NLS-1$
+                + "twins, so they otherwise land in the module as a marker. Set false to write the " //$NON-NLS-1$
+                + "source byte-for-byte.") //$NON-NLS-1$
             .stringProperty("expectedSource", //$NON-NLS-1$
                 "Lost-update guard for mode=replace: the module content you last read; mismatch rejects.") //$NON-NLS-1$
             .booleanProperty("overwrite", //$NON-NLS-1$
@@ -174,13 +183,21 @@ public class WriteModuleSourceTool implements IMcpTool
                 ". Only 'replace' mode can create new files.").toJson(); //$NON-NLS-1$
         }
 
+        AtomicBoolean mutationEntered = new AtomicBoolean();
+        AtomicBoolean mutationCommitted = new AtomicBoolean();
         try
         {
-            return writeModule(req, file, fileExists);
+            return writeModule(req, file, fileExists, mutationEntered, mutationCommitted);
         }
         catch (Exception e)
         {
-            return ToolResult.error("Failed to write file: " + e.getMessage()).toJson(); //$NON-NLS-1$
+            ToolResult error = mutationCommitted.get()
+                ? ToolResult.errorAfterMutation("Failed to write file: " + e.getMessage()) //$NON-NLS-1$
+                : mutationEntered.get()
+                    ? ToolResult.errorWithUnknownMutationOutcome(
+                        "Failed to write file: " + e.getMessage()) //$NON-NLS-1$
+                    : ToolResult.error("Failed to write file: " + e.getMessage()); //$NON-NLS-1$
+            return error.toJson();
         }
     }
 
@@ -204,6 +221,7 @@ public class WriteModuleSourceTool implements IMcpTool
         final String formName;
         final String commandName;
         final boolean skipSyntaxCheck;
+        final boolean normalizeInvalidCharacters;
         final String expectedSource;
         final boolean overwrite;
         final String expectedHash;
@@ -224,6 +242,8 @@ public class WriteModuleSourceTool implements IMcpTool
             this.formName = JsonUtils.extractStringArgument(params, "formName"); //$NON-NLS-1$
             this.commandName = JsonUtils.extractStringArgument(params, "commandName"); //$NON-NLS-1$
             this.skipSyntaxCheck = JsonUtils.extractBooleanArgument(params, "skipSyntaxCheck", false); //$NON-NLS-1$
+            this.normalizeInvalidCharacters =
+                JsonUtils.extractBooleanArgument(params, "normalizeInvalidCharacters", true); //$NON-NLS-1$
             this.expectedSource = JsonUtils.extractStringArgument(params, "expectedSource"); //$NON-NLS-1$
             this.overwrite = JsonUtils.extractBooleanArgument(params, "overwrite", false); //$NON-NLS-1$
             this.expectedHash = JsonUtils.extractStringArgument(params, "expectedHash"); //$NON-NLS-1$
@@ -248,11 +268,22 @@ public class WriteModuleSourceTool implements IMcpTool
      * @return the success response, or a ready {@link ToolResult#error} JSON payload from a
      *         guard (returned verbatim) — the same value in the same case as the inline flow
      */
-    private String writeModule(WriteRequest req, IFile file, boolean fileExists) throws Exception
+    private String writeModule(WriteRequest req, IFile file, boolean fileExists,
+        AtomicBoolean mutationEntered, AtomicBoolean mutationCommitted) throws Exception
     {
         // Normalize source: \r\n -> \n (same point and order as the inline try block,
         // i.e. AFTER validateWriteArguments measured the raw length).
         req.source = req.source.replace("\r\n", "\n"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        // Normalize the forbidden look-alike characters in the INCOMING source only (#161).
+        // Deliberately not applied to oldSource: that fragment is matched against what is
+        // already in the file, and normalizing it would stop it matching. It is also not
+        // applied to the untouched rest of the file - a write must change the lines the caller
+        // asked to change, not silently rewrite the ones it did not.
+        InvalidFileCharacters.Result charFix = req.normalizeInvalidCharacters
+            ? InvalidFileCharacters.normalize(req.source)
+            : InvalidFileCharacters.unchanged(req.source);
+        req.source = charFix.text();
 
         // Read current content (if file exists)
         List<String> originalLines;
@@ -300,11 +331,15 @@ public class WriteModuleSourceTool implements IMcpTool
         }
 
         // Write file (the mutating step — kept inline under the passed guards)
+        mutationEntered.set(true);
         writeFile(file, newLines, hasBom, fileExists, lineDelimiter);
+        // IFile.setContents/create has returned: any later exception is response work after the
+        // workspace mutation, not a refusal that left the module untouched.
+        mutationCommitted.set(true);
 
         // Return success
         return buildSuccessResponse(req.projectName, req.modulePath, req.mode, req.skipSyntaxCheck,
-            newLines, fileExists, totalOriginal);
+            newLines, fileExists, totalOriginal, charFix.summary());
     }
 
     /**
@@ -584,7 +619,8 @@ public class WriteModuleSourceTool implements IMcpTool
      * @return the wrapped success response
      */
     private static String buildSuccessResponse(String projectName, String modulePath, String mode,
-        boolean skipSyntaxCheck, List<String> newLines, boolean fileExists, int totalOriginal)
+        boolean skipSyntaxCheck, List<String> newLines, boolean fileExists, int totalOriginal,
+        String normalizedCharacters)
     {
         FrontMatter fm = FrontMatter.create()
             .put("tool", NAME) //$NON-NLS-1$
@@ -602,6 +638,14 @@ public class WriteModuleSourceTool implements IMcpTool
         else
         {
             fm.put("newFile", true); //$NON-NLS-1$
+        }
+
+        // Only when something WAS replaced: a key that is always there would be noise on every
+        // write, while a silent replacement would leave the caller believing it wrote what it
+        // sent. Absent means the source went in untouched.
+        if (normalizedCharacters != null)
+        {
+            fm.put("normalizedCharacters", normalizedCharacters); //$NON-NLS-1$
         }
 
         return fm.wrapContent("File written successfully"); //$NON-NLS-1$

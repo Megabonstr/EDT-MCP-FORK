@@ -43,11 +43,19 @@ public final class PreferenceConstants
     /** Default auto-start */
     public static final boolean DEFAULT_AUTO_START = false;
     
-    /** Default checks folder (empty - feature disabled) */
+    /** Default checks folder (empty - the descriptions shipped in the plugin are used) */
     public static final String DEFAULT_CHECKS_FOLDER = ""; //$NON-NLS-1$
     
     /** Default plain text mode (disabled - use embedded resources by default) */
     public static final boolean DEFAULT_PLAIN_TEXT_MODE = false;
+
+    // === Navigator preferences ===
+
+    /** Enable this plugin's Navigator tree-structure contributions. */
+    public static final String PREF_ENHANCE_NAVIGATOR = "navigator.enhance"; //$NON-NLS-1$
+
+    /** Default: preserve the current enhanced Navigator behavior. */
+    public static final boolean DEFAULT_ENHANCE_NAVIGATOR = true;
     
     // === Tag decoration preferences ===
     
@@ -88,9 +96,10 @@ public final class PreferenceConstants
      * Migration version this build applies: 1 = the 'git' tool ships disabled; 2 = a stored
      * Analysis Only / Code Review preset (saved before {@code apply_quick_fix} existed) gains it in
      * its disabled set; 3 = {@code ask_workmate} ships disabled; 4 = stored preset shapes gain the
-     * tools newly disabled through group membership.
+     * tools newly disabled through group membership; 5 = the renamed {@code debug_launch} entry
+     * becomes {@code launch}, so a deliberate disable survives the rename.
      */
-    public static final int TOOL_PREFS_MIGRATION_VERSION = 4;
+    public static final int TOOL_PREFS_MIGRATION_VERSION = 5;
 
     /** The raw {@code git} command tool is powerful, so it ships DISABLED by default (opt-in). */
     public static final String DEFAULT_DISABLED_TOOLS = "git,ask_workmate"; //$NON-NLS-1$

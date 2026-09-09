@@ -132,6 +132,8 @@ public final class InputSchemaCompactor
         keep.put("get_markers", asSet("markerKind", "priority")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         // Two filters that are mutually exclusive and differ in matching semantics.
         keep.put("get_project_errors", asSet("objects", "objectFqns")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        // Name-only compatibility filter vs Name-or-localized-Synonym discovery filter.
+        keep.put("get_metadata_objects", asSet("nameFilter", "textFilter")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         // 'callers' vs 'callees' - the enum values alone do not say which way they point.
         // methodName is REQUIRED for callers/callees and optional only for the module-wide
         // 'outgoing' mode - a conditional the schema states nowhere. The committed
@@ -152,6 +154,10 @@ public final class InputSchemaCompactor
         // them. Same conditional shape as mode->oldSource, one step further out.
         keep.put("write_module_source", asSet("expectedHash", "mode", "oldSource", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             "formName", "commandName")); //$NON-NLS-1$ //$NON-NLS-2$
+        // The enum cannot express either fact: md is the default, and xml is legal only for
+        // action=get + type=schema + a bare root. Without this one clause a schema-valid
+        // format=xml call can select a fragment, dynamic-list type, or mutation and be refused.
+        keep.put("dcs", asSet("format")); //$NON-NLS-1$ //$NON-NLS-2$
         // MUTATING DEFAULTS. Each of these defaults to true and, left out, performs a WRITE
         // the caller never asked for - the build stamps every object's Comment and flushes
         // the .mdo; the launch tools silently run a configuration->DB update; update_database
@@ -171,6 +177,19 @@ public final class InputSchemaCompactor
         keep.put("delete_infobase", //$NON-NLS-1$
             asSet("deleteRegistration", "deleteDatabaseFiles")); //$NON-NLS-1$ //$NON-NLS-2$
         keep.put("resync_to_disk", asSet("overwriteDiskEdits")); //$NON-NLS-1$ //$NON-NLS-2$
+        // The one parameter of the three-way comparison family whose prose warns about an effect
+        // of THAT parameter: in write mode the named file is REPLACED at the same path, and only when
+        // 'basedOn' names that same file - any other write over an existing file is refused. A
+        // caller that cannot see the condition either loses decisions it meant to keep or cannot
+        // find the one call shape that updates a rules file at all.
+        // Nothing else in that family is kept, deliberately: compare_configurations and
+        // get_comparison_node state their load-bearing facts in the TOOL description (the single
+        // comparison slot, that a FINISHED comparison is freed only by releaseComparisonId and not
+        // by cancel_job, that omitting scope compares everything, that an unfinished subtree is
+        // reported as unfinished), so a KEEP entry would pay twice for the same sentence; and
+        // merge_rules.decisions needs no entry because it is an opaque payload, kept structurally
+        // by isOpaquePayload with its {path, rule} shape and rule vocabulary intact.
+        keep.put("merge_rules", asSet("filePath")); //$NON-NLS-1$ //$NON-NLS-2$
         // debug=true also changes the return contract (a wait_for_break follow-up).
         // launchConfigurationName OR projectName+applicationId - the same target-selector
         // contract the grader models, and the arms produced project-only calls without it.
@@ -183,8 +202,8 @@ public final class InputSchemaCompactor
         // external work. A launch that looks routine silently overwrites someone's changes.
         // restartIfRunning=true TERMINATES the live session before relaunching, on a tool
         // whose destructiveHint is false - nothing else in the always-loaded contract says so.
-        keep.put("debug_launch", //$NON-NLS-1$
-            asSet("updateBeforeLaunch", KEY_EXTERNAL_CHANGES, KEY_PORT_CONFLICT,
+        keep.put("launch", //$NON-NLS-1$
+            asSet("mode", "updateBeforeLaunch", KEY_EXTERNAL_CHANGES, KEY_PORT_CONFLICT, //$NON-NLS-1$
                 "restartIfRunning")); //$NON-NLS-1$
         keep.put("debug_yaxunit_tests", //$NON-NLS-1$
             asSet("updateBeforeLaunch", KEY_EXTERNAL_CHANGES, KEY_PORT_CONFLICT)); //$NON-NLS-1$
@@ -241,10 +260,14 @@ public final class InputSchemaCompactor
         // a second keep.put() for create_project would silently drop the first.
         // baseProjectName completes the projectKind story: for an extension it is REQUIRED
         // (validateExtensionBaseProject rejects a blank one), while `required` lists only
-        // projectKind and name. Fourth parameter of this tool whose contract lives in prose
-        // - one schema serving three project kinds is the worst case for compaction.
+        // projectKind and name. This tool has several contracts that live in prose because one
+        // schema serves three project kinds - the worst case for compaction.
+        // externalObject is similarly conditional and its string schema cannot express either
+        // the Type.Name shape or that omission deliberately creates an empty import target.
+        // normalizeYo has the same silent-rewrite default as create_metadata below: without its
+        // prose a caller cannot know that a requested root Name may be stored differently.
         keep.put("create_project", asSet("autoSortTopObjects", "scriptVariant", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            "version", "baseProjectName")); //$NON-NLS-1$ //$NON-NLS-2$
+            "version", "baseProjectName", "externalObject", "normalizeYo")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
         // The parameter is ACCEPTED and then discarded (execute() reads it only for schema
         // parity; the class doc reserves it for a future release). Stripped to a bare
         // boolean it reads as a working option, and the response says otherwise only after

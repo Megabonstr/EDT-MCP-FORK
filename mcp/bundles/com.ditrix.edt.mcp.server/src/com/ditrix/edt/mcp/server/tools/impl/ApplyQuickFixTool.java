@@ -57,6 +57,18 @@ import com.google.gson.JsonObject;
  */
 public class ApplyQuickFixTool extends AbstractMetadataWriteTool
 {
+    /**
+     * A quick fix is driven by a MARKER, which is validation output: the checks and the marker
+     * cleaner are exactly the work that decides whether that marker still stands. Acting on one
+     * while they run would apply a fix for a problem that may no longer exist, so this tool keeps
+     * the strict gate that issue #495 relaxes for ordinary metadata edits.
+     */
+    @Override
+    protected boolean requiresFullDerivedData()
+    {
+        return true;
+    }
+
     public static final String NAME = "apply_quick_fix"; //$NON-NLS-1$
 
     private static final String KEY_PROJECT = "projectName"; //$NON-NLS-1$
@@ -488,8 +500,6 @@ public class ApplyQuickFixTool extends AbstractMetadataWriteTool
                     + "nothing on its own, so it cannot be applied headlessly. Fix this one manually " //$NON-NLS-1$
                     + "via write_module_source / modify_metadata.").toJson(); //$NON-NLS-1$
             }
-            fixManager.executeFix(handle, new NullProgressMonitor());
-
             // The one write in this plugin whose scope cannot be stated: EDT's fix extension point
             // reports NOTHING about what the variant touched, and the point does not forbid a fix on
             // a module-positioned diagnostic from changing the model as well. So this stays a
@@ -508,6 +518,14 @@ public class ApplyQuickFixTool extends AbstractMetadataWriteTool
             WriteScope.recordUndeterminable(
                 "EDT's quick-fix extension point does not report what the fix touched", //$NON-NLS-1$
                 undeterminableFallback(chosen.modulePath, projectName));
+
+            // Record the opacity BEFORE entering the extension point. It may mutate and then throw;
+            // recording only after a normal return made precisely that post-mutation error look
+            // like an ordinary refusal.
+            fixManager.executeFix(handle, new NullProgressMonitor());
+            // A normal return proves the opaque mutation operation completed, even though its
+            // project reach remains undeterminable for the export barrier.
+            WriteScope.recordMutationCommitted();
 
             return ToolResult.success()
                 .put("success", true) //$NON-NLS-1$

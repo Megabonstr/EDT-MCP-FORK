@@ -64,6 +64,7 @@ import com.ditrix.edt.mcp.server.utils.LaunchLifecycleUtils.PrepInFlight;
 import com.ditrix.edt.mcp.server.utils.LaunchLifecycleUtils.PreLaunchResult;
 import com.ditrix.edt.mcp.server.utils.LaunchConfigUtils;
 import com.ditrix.edt.mcp.server.utils.McpJobs;
+import com.ditrix.edt.mcp.server.utils.PlatformFailures;
 import com.ditrix.edt.mcp.server.utils.ProjectContext;
 import com.ditrix.edt.mcp.server.utils.ProjectStateChecker;
 import com.ditrix.edt.mcp.server.utils.StandaloneServerPortConflictPolicy;
@@ -276,7 +277,7 @@ public class RunYaxunitTestsTool implements IMcpTool
 
     /**
      * Shared schema doc for the {@code externalInfobaseChanges} parameter (also forwarded by
-     * the {@code debug_yaxunit_tests} alias and reused by {@code debug_launch} /
+     * the {@code debug_yaxunit_tests} alias and reused by {@code launch} /
      * {@code update_database}).
      */
     static final String EXTERNAL_INFOBASE_CHANGES_DESCRIPTION =
@@ -423,7 +424,7 @@ public class RunYaxunitTestsTool implements IMcpTool
      * "Application update" matcher follows {@code updateBeforeLaunch} —
      * auto-pressing that modal after the caller opted out of the DB update would
      * silently perform the very update they disabled (the same gating
-     * {@code DebugLaunchTool.performLaunch} applies) — and the RUN path never
+     * {@code LaunchTool.performLaunch} applies) — and the RUN path never
      * arms the code-1003 session matcher (that modal is raised only by the
      * debug-session check).
      */
@@ -1040,7 +1041,8 @@ public class RunYaxunitTestsTool implements IMcpTool
         catch (CoreException e)
         {
             Activator.logError("Error running YAXUnit tests", e); //$NON-NLS-1$
-            return ToolResult.error("Launch failed: " + e.getMessage()).toJson(); //$NON-NLS-1$
+            return ToolResult.error(
+                "Launch failed: " + PlatformFailures.describe(e)).toJson(); //$NON-NLS-1$
         }
         catch (InterruptedException e)
         {
@@ -1050,7 +1052,7 @@ public class RunYaxunitTestsTool implements IMcpTool
         catch (Exception e)
         {
             Activator.logError("Unexpected error running YAXUnit tests", e); //$NON-NLS-1$
-            return ToolResult.error(e.getMessage()).toJson();
+            return ToolResult.error(PlatformFailures.describe(e)).toJson();
         }
     }
 
@@ -1593,7 +1595,7 @@ public class RunYaxunitTestsTool implements IMcpTool
             // Auto-confirm EDT's blocking launch modals for the launch window only:
             // the "Application update" matcher gated on updateBeforeLaunch (auto-
             // pressing it after the caller opted out of the DB update would silently
-            // perform the very update they disabled — mirror DebugLaunchTool's
+            // perform the very update they disabled — mirror LaunchTool's
             // gating), PLUS the code-1003 "Debug session already exists" matcher as
             // the unconditional race net behind ensureNoExistingClientSession — if a
             // session slips in (or a terminate times out) between the sweep above and
@@ -1649,7 +1651,7 @@ public class RunYaxunitTestsTool implements IMcpTool
                 // cause, not with the delegate's generic message.
                 String cancelled = declinedConflict(conflicts, launchPolicy);
                 return ToolResult.error(cancelled != null ? cancelled
-                    : "Launch failed: " + ex.getMessage()).toJson(); //$NON-NLS-1$
+                    : "Launch failed: " + PlatformFailures.describe(ex)).toJson(); //$NON-NLS-1$
             }
             finally
             {
@@ -1799,7 +1801,7 @@ public class RunYaxunitTestsTool implements IMcpTool
      *
      * <p>Package-private (not {@code private}) so the same-package
      * {@code runPrepJobBody} ratchet can construct a request, exactly as
-     * {@code DebugLaunchTool.runLaunchJobBody} is a package-private seam.
+     * {@code LaunchTool.runLaunchJobBody} is a package-private seam.
      */
     static final class PrepRequest
     {
@@ -1971,7 +1973,7 @@ public class RunYaxunitTestsTool implements IMcpTool
      * The in-flight counter — not the short grace window — must therefore cover the whole
      * recompute+db-update, so a dialog raised by this connect (missing/wrong stored creds)
      * is still auto-cancelled instead of hanging the unattended call (mirrors
-     * {@code DebugLaunchTool.runLaunchJobBody}). The counter is ALWAYS released in
+     * {@code LaunchTool.runLaunchJobBody}). The counter is ALWAYS released in
      * {@code finally}, so it never leaks even on an {@link Error} escaping the prep.
      *
      * @param jobEntry the in-flight entry to complete (phase / error / done / latch)

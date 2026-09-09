@@ -19,6 +19,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.eclipse.core.resources.IProject;
 import org.eclipse.core.runtime.IProgressMonitor;
@@ -49,6 +50,7 @@ import com.ditrix.edt.mcp.server.utils.LaunchUpdateDialogAutoConfirmer;
 import com.ditrix.edt.mcp.server.utils.McpJobs;
 import com.ditrix.edt.mcp.server.utils.ProjectContext;
 import com.ditrix.edt.mcp.server.utils.ProjectStateChecker;
+import com.ditrix.edt.mcp.server.utils.StandaloneServerStateRecovery;
 import com.ditrix.edt.mcp.server.utils.WorkspacePaths;
 
 /**
@@ -526,8 +528,22 @@ public class BuildExternalObjectsTool implements IMcpTool
             {
                 try
                 {
+                    // The dump PREPARES the project's default application, and preparing a
+                    // server-backed one starts its standalone server. A server another operation
+                    // has just launched is still STARTING, and EDT starts only a STOPPED one — the
+                    // start then fails the whole dump with its "can only start server that is
+                    // stopped" refusal. Settling the state first turns that race into a short wait.
+                    StandaloneServerStateRecovery.ensureDefaultApplicationStartable(bc.project);
                     for (Target target : bc.targets)
                     {
+                        // The caller stops waiting at BUILD_TIMEOUT_MS and cancels this job, but
+                        // cancellation is cooperative: without this check the job would keep
+                        // deleting outputs and stamping Comments long after the tool reported the
+                        // timeout. Each object is a mutation, so the check belongs per object.
+                        if (monitor.isCanceled())
+                        {
+                            break;
+                        }
                         results.add(dumpOne(bc, target, buildStamp, monitor));
                     }
                 }
@@ -551,7 +567,7 @@ public class BuildExternalObjectsTool implements IMcpTool
         catch (InterruptedException e)
         {
             Thread.currentThread().interrupt();
-            return ToolResult.error("External object build was interrupted.").toJson(); //$NON-NLS-1$
+            return inFlightBuildError(bc, "External object build was interrupted."); //$NON-NLS-1$
         }
         finally
         {
@@ -566,17 +582,17 @@ public class BuildExternalObjectsTool implements IMcpTool
             {
                 builtSoFar = results.stream().filter(r -> Boolean.TRUE.equals(r.get(RES_SUCCESS))).count();
             }
-            return ToolResult.error("External object build timed out after " //$NON-NLS-1$
+            return inFlightBuildError(bc, "External object build timed out after " //$NON-NLS-1$
                 + (BUILD_TIMEOUT_MS / 1000) + " seconds (" + builtSoFar + " object(s) were already built to " //$NON-NLS-1$ //$NON-NLS-2$
                 + bc.outputDir + " before the timeout). The 1C runtime may be slow or an infobase may " //$NON-NLS-1$
                 + "be missing — ensure one is associated (create_infobase / set_infobase_credentials) " //$NON-NLS-1$
-                + "and retry.").toJson(); //$NON-NLS-1$
+                + "and retry."); //$NON-NLS-1$
         }
         if (fatalHolder[0] != null)
         {
             Activator.logError(NAME + " failed for project " + bc.project.getName(), fatalHolder[0]); //$NON-NLS-1$
-            return ToolResult.error("External object build failed: " + fatalHolder[0].getMessage() //$NON-NLS-1$
-                + authHint(fatalHolder[0])).toJson();
+            return buildError(bc, "External object build failed: " + fatalHolder[0].getMessage() //$NON-NLS-1$
+                + authHint(fatalHolder[0]));
         }
 
         return buildResponse(bc, results, System.currentTimeMillis() - buildStartMs);
@@ -638,6 +654,9 @@ public class BuildExternalObjectsTool implements IMcpTool
                     }
                     return Boolean.TRUE;
                 });
+                // The BM transaction has returned successfully. Everything below (export,
+                // re-resolve and runtime dump) can fail after this committed model change.
+                bc.mutationCommitted.set(true);
                 BmTransactions.forceExportToDisk(bc.project, target.fqn);
             }
             // Re-resolve the object handle inside a SHORT read transaction (a BM-model lookup must run in
@@ -695,7 +714,11 @@ public class BuildExternalObjectsTool implements IMcpTool
         }
 
         boolean allOk = failed == 0;
-        ToolResult tr = allOk ? ToolResult.success() : ToolResult.error("Built " + built //$NON-NLS-1$
+        ToolResult tr = allOk ? ToolResult.success()
+            : bc.mutationCommitted.get() ? ToolResult.errorAfterMutation("Built " + built //$NON-NLS-1$
+                + " of " + (built + failed) + " external object(s) in " + elapsedMs + " ms; " //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+                + failed + " failed.") //$NON-NLS-1$
+            : ToolResult.error("Built " + built //$NON-NLS-1$
             + " of " + (built + failed) + " external object(s) in " + elapsedMs + " ms; " //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             + failed + " failed."); //$NON-NLS-1$
         tr.put(McpKeys.PROJECT, bc.project.getName())
@@ -716,6 +739,20 @@ public class BuildExternalObjectsTool implements IMcpTool
             tr.put(McpKeys.MESSAGE, message);
         }
         return tr.toJson();
+    }
+
+    /** Builds a failed response from the BM commit signal shared with the background job. */
+    private static String buildError(BuildContext bc, String message)
+    {
+        return (bc.mutationCommitted.get() ? ToolResult.errorAfterMutation(message)
+            : ToolResult.error(message)).toJson();
+    }
+
+    /** A timed-out Job may still cross the stamp transaction after this thread samples the flag. */
+    private static String inFlightBuildError(BuildContext bc, String message)
+    {
+        return (bc.mutationCommitted.get() ? ToolResult.errorAfterMutation(message)
+            : ToolResult.errorWithUnknownMutationOutcome(message)).toJson();
     }
 
     /**
@@ -878,6 +915,8 @@ public class BuildExternalObjectsTool implements IMcpTool
         final Path outputDir;
         final boolean outsideWorkspace;
         final boolean recordBuildTime;
+        /** Written by the dump Job after a stamp transaction returns; read by every error exit. */
+        final AtomicBoolean mutationCommitted = new AtomicBoolean();
 
         private BuildContext(IProject project, IBmModel bmModel,
                 IExternalObjectDumper dumper, List<Target> targets, Path outputDir, boolean outsideWorkspace,

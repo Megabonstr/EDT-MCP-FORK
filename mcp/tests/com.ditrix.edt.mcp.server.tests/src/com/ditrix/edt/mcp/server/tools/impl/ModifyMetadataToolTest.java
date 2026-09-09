@@ -13,13 +13,18 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
+import org.eclipse.emf.common.util.Enumerator;
 import org.eclipse.emf.ecore.EAttribute;
 import org.eclipse.emf.ecore.EClass;
+import org.eclipse.emf.ecore.EDataType;
 import org.eclipse.emf.ecore.EEnum;
 import org.eclipse.emf.ecore.EEnumLiteral;
 import org.eclipse.emf.ecore.EObject;
@@ -30,11 +35,19 @@ import org.eclipse.emf.ecore.EcoreFactory;
 import org.eclipse.emf.ecore.EcorePackage;
 import org.eclipse.emf.ecore.impl.DynamicEObjectImpl;
 import org.junit.Test;
+import org.mockito.Mockito;
 
+import com._1c.g5.v8.bm.core.IBmObject;
 import com._1c.g5.v8.dt.mcore.McorePackage;
+import com._1c.g5.v8.dt.mcore.QName;
 import com._1c.g5.v8.dt.metadata.mdclass.BasicTemplate;
+import com._1c.g5.v8.dt.metadata.mdclass.Catalog;
+import com._1c.g5.v8.dt.metadata.mdclass.CatalogAttribute;
+import com._1c.g5.v8.dt.metadata.mdclass.CatalogForm;
 import com._1c.g5.v8.dt.metadata.mdclass.CommandGroup;
+import com._1c.g5.v8.dt.metadata.mdclass.CommonForm;
 import com._1c.g5.v8.dt.metadata.mdclass.CommonModule;
+import com._1c.g5.v8.dt.metadata.mdclass.CommonPicture;
 import com._1c.g5.v8.dt.metadata.mdclass.Configuration;
 import com._1c.g5.v8.dt.metadata.mdclass.DataProcessor;
 import com._1c.g5.v8.dt.metadata.mdclass.DataProcessorForm;
@@ -44,6 +57,7 @@ import com._1c.g5.v8.dt.metadata.mdclass.MdClassPackage;
 import com._1c.g5.v8.dt.metadata.mdclass.MdObject;
 import com._1c.g5.v8.dt.metadata.mdclass.ScheduledJob;
 import com._1c.g5.v8.dt.metadata.mdclass.TemplateType;
+import com._1c.g5.v8.dt.metadata.mdclass.XDTOPackage;
 import com._1c.g5.v8.dt.platform.version.Version;
 import com.ditrix.edt.mcp.server.tools.IMcpTool.ResponseType;
 import com.ditrix.edt.mcp.server.tools.impl.ModifyMetadataTool.FormHolder;
@@ -52,11 +66,16 @@ import com.ditrix.edt.mcp.server.utils.DestructiveConsentGate.ConsentDecision;
 import com.ditrix.edt.mcp.server.utils.MdNameNormalizer;
 import com.ditrix.edt.mcp.server.utils.FormElementWriter;
 import com.ditrix.edt.mcp.server.utils.MetadataLanguageUtils;
+import com.ditrix.edt.mcp.server.utils.McoreValueListBuilder;
+import com.ditrix.edt.mcp.server.utils.MetadataScope;
+import com.ditrix.edt.mcp.server.utils.MetadataTypeBuilder;
 import com.ditrix.edt.mcp.server.utils.MetadataTypeUtils;
 import com.ditrix.edt.mcp.server.utils.MetadataTypeUtils.MetadataTypeInfo;
 import com.ditrix.edt.mcp.server.utils.PredefinedWriter;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 
 /**
@@ -80,12 +99,100 @@ public class ModifyMetadataToolTest
     }
 
     @Test
+    public void testEventSubscriptionSourceSelectsEventSourceTypeTargetOnlyForThatFeature()
+    {
+        EStructuralFeature source = MdClassPackage.Literals.EVENT_SUBSCRIPTION__SOURCE;
+        assertSame(McorePackage.Literals.TYPE_DESCRIPTION, source.getEType());
+        assertSame(MetadataTypeBuilder.TypeTarget.EVENT_SOURCE,
+            ModifyMetadataTool.typeTargetForFeature(
+                MetadataTypeBuilder.TypeTarget.METADATA, source));
+
+        CatalogAttribute attribute = MdClassFactory.eINSTANCE.createCatalogAttribute();
+        EStructuralFeature attributeType = attribute.eClass().getEStructuralFeature("type"); //$NON-NLS-1$
+        assertNotNull(attributeType);
+        assertSame(McorePackage.Literals.TYPE_DESCRIPTION, attributeType.getEType());
+        assertSame(MetadataTypeBuilder.TypeTarget.METADATA,
+            ModifyMetadataTool.typeTargetForFeature(
+                MetadataTypeBuilder.TypeTarget.METADATA, attributeType));
+        assertSame(MetadataTypeBuilder.TypeTarget.FORM_ATTRIBUTE,
+            ModifyMetadataTool.typeTargetForFeature(
+                MetadataTypeBuilder.TypeTarget.FORM_ATTRIBUTE, source));
+    }
+
+    @Test
     public void testDescriptionPointsToGuide()
     {
         String desc = new ModifyMetadataTool().getDescription();
         assertNotNull(desc);
         assertTrue("description should point to get_tool_guide", //$NON-NLS-1$
             desc.contains("get_tool_guide('modify_metadata')")); //$NON-NLS-1$
+        assertTrue("description should advertise managed-form roots", //$NON-NLS-1$
+            desc.contains("managed-form roots")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testManagedFormRootDispatchUsesOwnedAndCommonFallbackRules()
+    {
+        Configuration config = MdClassFactory.eINSTANCE.createConfiguration();
+        Catalog catalog = MdClassFactory.eINSTANCE.createCatalog();
+        catalog.setName("X"); //$NON-NLS-1$
+        CatalogForm owned = MdClassFactory.eINSTANCE.createCatalogForm();
+        owned.setName("Y"); //$NON-NLS-1$
+        catalog.getForms().add(owned);
+        config.getCatalogs().add(catalog);
+        CommonForm common = MdClassFactory.eINSTANCE.createCommonForm();
+        common.setName("Y"); //$NON-NLS-1$
+        config.getCommonForms().add(common);
+        MetadataScope scope = MetadataScope.ofConfiguration(config);
+
+        String englishOwned = MetadataTypeUtils.normalizeFqn("Catalog.X.Form.Y"); //$NON-NLS-1$
+        String russianOwned = MetadataTypeUtils.normalizeFqn("Справочник.X.Форма.Y"); //$NON-NLS-1$
+        String commonPath = MetadataTypeUtils.normalizeFqn("CommonForm.Y"); //$NON-NLS-1$
+
+        assertSame(owned, ModifyMetadataTool.resolveFormRootForDispatch(scope, englishOwned));
+        assertSame(owned, ModifyMetadataTool.resolveFormRootForDispatch(scope, russianOwned));
+        assertTrue("an English owned-form address always takes the content-root path", //$NON-NLS-1$
+            ModifyMetadataTool.shouldDispatchFormRoot(
+                FormElementWriter.parseFormPath(englishOwned), null,
+                Collections.singletonList(prop("comment", "x")))); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("a Russian owned-form address always takes the content-root path", //$NON-NLS-1$
+            ModifyMetadataTool.shouldDispatchFormRoot(
+                FormElementWriter.parseFormPath(russianOwned), null,
+                Collections.singletonList(prop("comment", "x")))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertSame(common, ModifyMetadataTool.resolveFormRootForDispatch(scope, commonPath));
+        assertFalse("an mdclass-assignable property keeps CommonForm.Y on the mdclass path", //$NON-NLS-1$
+            ModifyMetadataTool.shouldDispatchFormRoot(
+                FormElementWriter.parseFormPath(commonPath), common,
+                Collections.singletonList(prop("usePurposes", "PersonalComputer")))); //$NON-NLS-1$ //$NON-NLS-2$
+        assertTrue("root-only properties make CommonForm.Y fall back to the content root", //$NON-NLS-1$
+            ModifyMetadataTool.shouldDispatchFormRoot(
+                FormElementWriter.parseFormPath(commonPath), common,
+                Collections.singletonList(prop("autoTitle", "false")))); //$NON-NLS-1$ //$NON-NLS-2$
+        assertFalse("a mixed CommonForm.Y call stays wholly on the mdclass path", //$NON-NLS-1$
+            ModifyMetadataTool.shouldDispatchFormRoot(
+                FormElementWriter.parseFormPath(commonPath), common,
+                Arrays.asList(prop("autoTitle", "false"), //$NON-NLS-1$ //$NON-NLS-2$
+                    prop("comment", "x")))); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    @Test
+    public void testMissingManagedFormRootUsesFormSpecificOwnerError()
+    {
+        Configuration config = MdClassFactory.eINSTANCE.createConfiguration();
+        Catalog catalog = MdClassFactory.eINSTANCE.createCatalog();
+        catalog.setName("X"); //$NON-NLS-1$
+        config.getCatalogs().add(catalog);
+        MetadataScope scope = MetadataScope.ofConfiguration(config);
+        String normFqn = MetadataTypeUtils.normalizeFqn("Catalog.X.Form.Nope"); //$NON-NLS-1$
+
+        assertNull(ModifyMetadataTool.resolveFormRootForDispatch(scope, normFqn));
+        String error = ModifyMetadataTool.formRootNotFoundError(
+            FormElementWriter.parseFormPath(normFqn));
+        assertTrue(error, error.contains("Form 'Nope' not found")); //$NON-NLS-1$
+        assertTrue(error, error.contains("Catalog.X")); //$NON-NLS-1$
+        assertTrue(error, error.contains("get_metadata_details")); //$NON-NLS-1$
+        assertFalse(error, error.contains("Node not found")); //$NON-NLS-1$
     }
 
     @Test
@@ -207,6 +314,262 @@ public class ModifyMetadataToolTest
     }
 
     @Test
+    public void testInputSchemaKeepsContainedValueGrammarsOutOfSharedPropertiesProse()
+    {
+        String schema = new ModifyMetadataTool().getInputSchema();
+        assertFalse(schema.contains("StdPicture.<Name>")); //$NON-NLS-1$
+        assertFalse(schema.contains("StdExtPicture.<Name>")); //$NON-NLS-1$
+        assertFalse(schema.contains("CommonPicture.<Name>")); //$NON-NLS-1$
+        assertFalse(schema.contains("{http://www.w3.org/2001/XMLSchema}string")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testMalformedPictureRefusalHasExactActionableWording()
+    {
+        ModifyMetadataTool.PicturePreparation prepared = ModifyMetadataTool.buildPictureValue(
+            "headerPicture", new JsonPrimitive("Change"), //$NON-NLS-1$ //$NON-NLS-2$
+            MetadataScope.ofConfiguration(null), null);
+
+        assertEquals("Invalid picture for property 'headerPicture': Picture value \"Change\" is invalid. " //$NON-NLS-1$
+            + "Use 'StdPicture.<Name>' or 'StdExtPicture.<Name>' for a platform picture, or " //$NON-NLS-1$
+            + "'CommonPicture.<Name>' (the type token may also be Russian) for a configuration " //$NON-NLS-1$
+            + "picture; use list_common_pictures to " //$NON-NLS-1$
+            + "discover configuration pictures.", errorText(prepared.error)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testUnresolvableStandardPictureRefusalHasExactActionableWording()
+    {
+        ModifyMetadataTool.PicturePreparation prepared = ModifyMetadataTool.buildPictureValue(
+            "headerPicture", new JsonPrimitive("StdPicture.Nope"), //$NON-NLS-1$ //$NON-NLS-2$
+            MetadataScope.ofConfiguration(null), null);
+
+        assertEquals("Invalid picture for property 'headerPicture': Picture value 'StdPicture.Nope' " //$NON-NLS-1$
+            + "could not be resolved for this platform version. Use list_common_pictures for " //$NON-NLS-1$
+            + "configuration pictures, or use the exact 'StdPicture.<Name>' or " //$NON-NLS-1$
+            + "'StdExtPicture.<Name>' spelling for a platform picture.", //$NON-NLS-1$
+            errorText(prepared.error));
+    }
+
+    @Test
+    public void testResolvedCommonPictureIsReducedToBmIdWithoutRetainingLiveObject()
+    {
+        IBmObject liveCommonPicture = Mockito.mock(IBmObject.class,
+            Mockito.withSettings().extraInterfaces(CommonPicture.class));
+        Mockito.when(liveCommonPicture.bmGetId()).thenReturn(497L);
+
+        ModifyMetadataTool.PicturePreparation prepared =
+            ModifyMetadataTool.prepareResolvedPicture((EObject)liveCommonPicture);
+
+        assertNull(prepared.error);
+        assertNull("a live CommonPicture must not cross the prepare/write boundary", //$NON-NLS-1$
+            prepared.platformPictureProxy);
+        assertEquals(Long.valueOf(497L), prepared.commonPictureBmId);
+        Mockito.verify(liveCommonPicture).bmGetId();
+    }
+
+    @Test
+    public void testQNameMissingNsUriRefusalHasExactActionableWording()
+    {
+        JsonObject raw = new JsonObject();
+        raw.addProperty("name", "string"); //$NON-NLS-1$ //$NON-NLS-2$
+        ModifyMetadataTool.ContainedValuePreparation prepared =
+            ModifyMetadataTool.buildQNameValue("xdtoValueType", raw); //$NON-NLS-1$
+
+        assertEquals("Invalid QName value for property 'xdtoValueType': {\"name\":\"string\"}; the " //$NON-NLS-1$
+            + "object form requires exactly the 'name' and 'nsUri' members. Use either " //$NON-NLS-1$
+            + "{\"name\":\"string\",\"nsUri\":\"http://www.w3.org/2001/XMLSchema\"} or " //$NON-NLS-1$
+            + "\"{http://www.w3.org/2001/XMLSchema}string\".", errorText(prepared.error)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testBadCompactQNameRefusalHasExactActionableWording()
+    {
+        ModifyMetadataTool.ContainedValuePreparation prepared = ModifyMetadataTool.buildQNameValue(
+            "xdtoReturningValueType", //$NON-NLS-1$
+            new JsonPrimitive("{http://www.w3.org/2001/XMLSchema}")); //$NON-NLS-1$
+
+        assertEquals("Invalid QName value for property 'xdtoReturningValueType': " //$NON-NLS-1$
+            + "\"{http://www.w3.org/2001/XMLSchema}\"; the compact form must be '{nsUri}name' with " //$NON-NLS-1$
+            + "a non-empty namespace URI and name. Use either " //$NON-NLS-1$
+            + "{\"name\":\"string\",\"nsUri\":\"http://www.w3.org/2001/XMLSchema\"} or " //$NON-NLS-1$
+            + "\"{http://www.w3.org/2001/XMLSchema}string\".", errorText(prepared.error)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testStructuredQNameBuildsBothRequiredMembers()
+    {
+        JsonObject raw = new JsonObject();
+        raw.addProperty("name", "string"); //$NON-NLS-1$ //$NON-NLS-2$
+        raw.addProperty("nsUri", "http://www.w3.org/2001/XMLSchema"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        ModifyMetadataTool.ContainedValuePreparation prepared =
+            ModifyMetadataTool.buildQNameValue("xdtoValueType", raw); //$NON-NLS-1$
+
+        assertNull(prepared.error);
+        QName qname = (QName)prepared.value;
+        assertEquals("string", qname.getName()); //$NON-NLS-1$
+        assertEquals("http://www.w3.org/2001/XMLSchema", qname.getNsUri()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testCompactQNameBuildsBothRequiredMembers()
+    {
+        ModifyMetadataTool.ContainedValuePreparation prepared = ModifyMetadataTool.buildQNameValue(
+            "xdtoReturningValueType", //$NON-NLS-1$
+            new JsonPrimitive("{http://www.w3.org/2001/XMLSchema}string")); //$NON-NLS-1$
+
+        assertNull(prepared.error);
+        QName qname = (QName)prepared.value;
+        assertEquals("string", qname.getName()); //$NON-NLS-1$
+        assertEquals("http://www.w3.org/2001/XMLSchema", qname.getNsUri()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testInvalidMcoreValueListRefusalHasExactActionableWording()
+    {
+        ModifyMetadataTool.McoreValueListPreparation prepared =
+            ModifyMetadataTool.buildMcoreValueListValue("xdtoPackages", //$NON-NLS-1$
+                JsonParser.parseString("[\"XDTOPackege.Nope\"]"), //$NON-NLS-1$
+                MetadataScope.ofConfiguration(null));
+
+        assertEquals("Invalid mcore Value list for property 'xdtoPackages': Mcore Value-list entry " //$NON-NLS-1$
+            + "'XDTOPackege.Nope' could not be resolved as a configuration XDTO package and is not " //$NON-NLS-1$
+            + "a supported namespace URI. Use an existing 'XDTOPackage.<Name>' FQN (the type token " //$NON-NLS-1$
+            + "may also be Russian), or a platform namespace URI beginning with 'http://', " //$NON-NLS-1$
+            + "'https://', or 'urn:'.", errorText(prepared.error)); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testMcoreValueListReferenceIsReducedToBmIdAndOrderIsPreserved()
+    {
+        IBmObject livePackage = Mockito.mock(IBmObject.class,
+            Mockito.withSettings().extraInterfaces(XDTOPackage.class));
+        Mockito.when(livePackage.bmGetId()).thenReturn(450L);
+        List<McoreValueListBuilder.Item> items = Arrays.asList(
+            McoreValueListBuilder.Item.reference((XDTOPackage)livePackage),
+            McoreValueListBuilder.Item.namespace("urn:e2e:platform")); //$NON-NLS-1$
+
+        ModifyMetadataTool.McoreValueListPreparation prepared =
+            ModifyMetadataTool.prepareResolvedMcoreValueList(items);
+
+        assertNull(prepared.error);
+        assertEquals(2, prepared.values.size());
+        assertEquals(Long.valueOf(450L), prepared.values.get(0).referenceBmId);
+        assertNull("the live XDTO package must not cross the prepare/write boundary", //$NON-NLS-1$
+            prepared.values.get(0).namespaceUri);
+        assertEquals("urn:e2e:platform", prepared.values.get(1).namespaceUri); //$NON-NLS-1$
+        assertNull(prepared.values.get(1).referenceBmId);
+        Mockito.verify(livePackage).bmGetId();
+    }
+
+    @Test
+    public void testManyEnumArrayPreparesListReplacement() throws Exception
+    {
+        Object change = preparedManyEnumChange(
+            JsonParser.parseString("[\"personalcomputer\",\"MobileDevice\"]")); //$NON-NLS-1$
+
+        assertEquals("MANY_ENUM", preparedChangeKind(change)); //$NON-NLS-1$
+        List<?> values = preparedChangeValues(change);
+        assertEquals(2, values.size());
+        assertEquals("PersonalComputer", ((Enumerator)values.get(0)).getName()); //$NON-NLS-1$
+        assertEquals("MobileDevice", ((Enumerator)values.get(1)).getName()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testManyEnumScalarPreparesOneElementListReplacement() throws Exception
+    {
+        Object change = preparedManyEnumChange(new JsonPrimitive("MobileDevice")); //$NON-NLS-1$
+
+        assertEquals("MANY_ENUM", preparedChangeKind(change)); //$NON-NLS-1$
+        List<?> values = preparedChangeValues(change);
+        assertEquals(1, values.size());
+        assertEquals("MobileDevice", ((Enumerator)values.get(0)).getName()); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testManyEnumUnknownLiteralNamesElementAndAllowedValues()
+    {
+        String bad = "DesktopComputer"; //$NON-NLS-1$
+        String error = errorText(manyEnumVerdict(
+            JsonParser.parseString("[\"PersonalComputer\",\"" + bad + "\"]"))); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue(error.contains("index 1")); //$NON-NLS-1$
+        assertTrue(error.contains(bad));
+        assertTrue(error.contains("PersonalComputer")); //$NON-NLS-1$
+        assertTrue(error.contains("MobileDevice")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testManyEnumObjectAndNestedArrayAreCleanShapeRefusals()
+    {
+        JsonElement object = JsonParser.parseString("{\"literal\":\"PersonalComputer\"}"); //$NON-NLS-1$
+        JsonElement nested = JsonParser.parseString("[[\"PersonalComputer\"]]"); //$NON-NLS-1$
+        for (JsonElement[] refusal : new JsonElement[][] {
+            {object, object}, {nested, nested.getAsJsonArray().get(0)}})
+        {
+            String error = errorText(manyEnumVerdict(refusal[0]));
+
+            assertTrue("the refusal must name the bad JSON value: " + error, //$NON-NLS-1$
+                error.contains(refusal[1].toString()));
+            assertTrue(error.contains("Expected a JSON array of enum literal strings")); //$NON-NLS-1$
+            assertTrue(error.contains("bare enum literal string")); //$NON-NLS-1$
+        }
+    }
+
+    private static Object preparedManyEnumChange(JsonElement value) throws Exception
+    {
+        Method prepare = ModifyMetadataTool.class.getDeclaredMethod("prepareFormMemberChanges", //$NON-NLS-1$
+            MetadataScope.class, Version.class, EObject.class, List.class, MdNameNormalizer.Report.class);
+        prepare.setAccessible(true);
+        List<?> changes = (List<?>)prepare.invoke(new ModifyMetadataTool(), null, null,
+            MdClassFactory.eINSTANCE.createCommonForm(),
+            Collections.singletonList(manyEnumProperty(value)), report());
+        Object holderChange = changes.get(0);
+        Field changeField = holderChange.getClass().getDeclaredField("change"); //$NON-NLS-1$
+        changeField.setAccessible(true);
+        return changeField.get(holderChange);
+    }
+
+    private static String preparedChangeKind(Object change) throws Exception
+    {
+        Field kind = change.getClass().getDeclaredField("kind"); //$NON-NLS-1$
+        kind.setAccessible(true);
+        return kind.get(change).toString();
+    }
+
+    private static List<?> preparedChangeValues(Object change) throws Exception
+    {
+        Field scalarValue = change.getClass().getDeclaredField("scalarValue"); //$NON-NLS-1$
+        scalarValue.setAccessible(true);
+        return (List<?>)scalarValue.get(change);
+    }
+
+    private static String manyEnumVerdict(JsonElement value)
+    {
+        return neverAsking().formRetypeVerdict(null, null,
+            MdClassFactory.eINSTANCE.createCommonForm(),
+            Collections.singletonList(manyEnumProperty(value)), report());
+    }
+
+    private static JsonObject manyEnumProperty(JsonElement value)
+    {
+        JsonObject property = new JsonObject();
+        property.addProperty("name", "usePurposes"); //$NON-NLS-1$ //$NON-NLS-2$
+        property.add("value", value); //$NON-NLS-1$
+        return property;
+    }
+
+    private static String errorText(String errorJson)
+    {
+        assertNotNull(errorJson);
+        JsonObject parsed = JsonParser.parseString(errorJson).getAsJsonObject();
+        assertFalse("the refusal must use ToolResult.error", //$NON-NLS-1$
+            parsed.get("success").getAsBoolean()); //$NON-NLS-1$
+        return parsed.get("error").getAsString(); //$NON-NLS-1$
+    }
+
+    @Test
     public void testNormalizeYoIsOptional()
     {
         String schema = new ModifyMetadataTool().getInputSchema();
@@ -246,6 +609,18 @@ public class ModifyMetadataToolTest
         // renaming is refused with a pointer to rename_metadata_object
         assertTrue("guide should point a rename at rename_metadata_object", //$NON-NLS-1$
             guide.contains("rename_metadata_object")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testGuideExplainsManyEnumReplacementShapes()
+    {
+        String guide = new ModifyMetadataTool().getGuide();
+
+        assertTrue(guide.contains("MANY_ENUM")); //$NON-NLS-1$
+        assertTrue(guide.contains("FULL-REPLACE")); //$NON-NLS-1$
+        assertTrue(guide.contains("CommonForm.Main")); //$NON-NLS-1$
+        assertTrue(guide.contains("bare scalar literal")); //$NON-NLS-1$
+        assertTrue(guide.contains("does not append")); //$NON-NLS-1$
     }
 
     // ---- a handler rebind must not be mixed with other property changes ---------------------------
@@ -664,6 +1039,19 @@ public class ModifyMetadataToolTest
             err.contains("CommandGroup.<Name>")); //$NON-NLS-1$
         assertTrue("a non-group reference gets the generic FQN hint", //$NON-NLS-1$
             err.contains("get_metadata_objects")); //$NON-NLS-1$
+    }
+
+    @Test
+    public void testValidateReferenceTargetAllowsBasicTemplateMemberForReportMainSchema()
+    {
+        BasicTemplate template = MdClassFactory.eINSTANCE.createTemplate();
+        EStructuralFeature feature = MdClassFactory.eINSTANCE.createReport().eClass()
+            .getEStructuralFeature("mainDataCompositionSchema"); //$NON-NLS-1$
+
+        assertNotNull("precondition: Report must declare mainDataCompositionSchema", feature); //$NON-NLS-1$
+        assertNull("a BasicTemplate member has a BM id and is re-fetchable inside the write tx", //$NON-NLS-1$
+            ModifyMetadataTool.validateReferenceTarget("mainDataCompositionSchema", feature, //$NON-NLS-1$
+                template, "Report.Sales.Template.MainDCS")); //$NON-NLS-1$
     }
 
     // ===== form-member extInfo routing (#235: a UsualGroup's layout props live under <extInfo>) =====
@@ -1136,113 +1524,6 @@ public class ModifyMetadataToolTest
         }
     }
 
-    // ===== DCS (Report Data Composition Schema) payload dispatch guards (#241) =======================
-    //
-    // A `dcs` payload authors a report's Data Composition Schema; it is only valid on a Report FQN, is
-    // authored through its own surface, and must not be mixed with a generic properties / membership
-    // content / Role / template payload. The two tool-level guards behind that (dcsOnlyForReportFqnError
-    // on a non-Report FQN; dcsMixError at the dispatch site) plus the parseDcsArg reader are pure and
-    // covered here, mirroring the #245 template guard tests. The live BM write + force-export (the report
-    // -> DCS-template resolution + the .dcs drain) is covered by the E2E suite.
-
-    @Test
-    public void testDcsPayloadRefusedOnNonReportFqn()
-    {
-        // A `dcs` payload addressed to a NON-Report FQN must be refused (not silently dropped while a
-        // generic / role / content / template branch reports success): the error names the offending FQN,
-        // the 'dcs' payload, what the FQN actually is, and points at the valid Report FQN shape.
-        String err = ModifyMetadataTool.dcsOnlyForReportFqnError(
-            "Catalog.Goods", "is a Catalog"); //$NON-NLS-1$ //$NON-NLS-2$
-        assertNotNull("a dcs payload on a non-Report FQN must be refused", err); //$NON-NLS-1$
-        assertTrue("the refusal must be a ToolResult error json", err.contains("\"error\"")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertTrue("the refusal must name the offending FQN", err.contains("Catalog.Goods")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertTrue("the refusal must name the 'dcs' payload", err.contains("dcs")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertTrue("the refusal must echo what the FQN actually is", err.contains("is a Catalog")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertTrue("the refusal must point at the valid Report FQN shape", //$NON-NLS-1$
-            err.contains("Report.<Name>")); //$NON-NLS-1$
-    }
-
-    @Test
-    public void testDcsPayloadMixRefused()
-    {
-        // A `dcs` payload combined with a generic 'properties' change is refused, naming both payloads.
-        String propsMix = ModifyMetadataTool.dcsMixError(
-            Collections.singletonList(prop("comment", "Sales")), //$NON-NLS-1$ //$NON-NLS-2$
-            Collections.<JsonObject> emptyList(), false, false);
-        assertNotNull("dcs + a generic properties change must be refused", propsMix); //$NON-NLS-1$
-        assertTrue("the refusal must be a ToolResult error json", propsMix.contains("\"error\"")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertTrue("the refusal must name the dcs payload", propsMix.contains("dcs")); //$NON-NLS-1$ //$NON-NLS-2$
-        assertTrue("the refusal must name the conflicting properties change", //$NON-NLS-1$
-            propsMix.contains("properties")); //$NON-NLS-1$
-
-        // A `dcs` payload combined with a membership 'content' payload is refused, naming 'content'.
-        String contentMix = ModifyMetadataTool.dcsMixError(
-            Collections.<JsonObject> emptyList(),
-            Collections.singletonList(prop("metadata", "Catalog.Goods")), false, false); //$NON-NLS-1$ //$NON-NLS-2$
-        assertNotNull("dcs + a membership content payload must be refused", contentMix); //$NON-NLS-1$
-        assertTrue("the refusal must name the conflicting content payload", //$NON-NLS-1$
-            contentMix.contains("content")); //$NON-NLS-1$
-
-        // A `dcs` payload combined with a Role payload is refused, naming the Role rights payload.
-        String roleMix = ModifyMetadataTool.dcsMixError(
-            Collections.<JsonObject> emptyList(), Collections.<JsonObject> emptyList(), true, false);
-        assertNotNull("dcs + a Role payload must be refused", roleMix); //$NON-NLS-1$
-        assertTrue("the refusal must name the Role rights payload", //$NON-NLS-1$
-            roleMix.contains("Role") && roleMix.contains("rights")); //$NON-NLS-1$ //$NON-NLS-2$
-
-        // A `dcs` payload combined with a `template` payload is refused, naming the template payload.
-        String templateMix = ModifyMetadataTool.dcsMixError(
-            Collections.<JsonObject> emptyList(), Collections.<JsonObject> emptyList(), false, true);
-        assertNotNull("dcs + a template payload must be refused", templateMix); //$NON-NLS-1$
-        assertTrue("the refusal must name the conflicting template payload", //$NON-NLS-1$
-            templateMix.contains("template")); //$NON-NLS-1$
-
-        // A `dcs` payload standing alone is NOT a mix -> null, so the write proceeds.
-        assertNull("a lone dcs payload is not a mix", ModifyMetadataTool.dcsMixError( //$NON-NLS-1$
-            Collections.<JsonObject> emptyList(), Collections.<JsonObject> emptyList(), false, false));
-    }
-
-    @Test
-    public void testParseDcsArgHandlesAbsentBlankAndMalformed()
-    {
-        Map<String, String> params = new HashMap<>();
-        // Absent -> no payload, no error (the caller falls through to the other branches).
-        ModifyMetadataTool.DcsArg absent = ModifyMetadataTool.parseDcsArg(params);
-        assertNull("an absent 'dcs' arg carries no spec", absent.spec); //$NON-NLS-1$
-        assertNull("an absent 'dcs' arg carries no error", absent.error); //$NON-NLS-1$
-
-        // Blank / whitespace-only -> absent.
-        params.put("dcs", "   "); //$NON-NLS-1$ //$NON-NLS-2$
-        ModifyMetadataTool.DcsArg blank = ModifyMetadataTool.parseDcsArg(params);
-        assertNull("a blank 'dcs' arg carries no spec", blank.spec); //$NON-NLS-1$
-        assertNull("a blank 'dcs' arg carries no error", blank.error); //$NON-NLS-1$
-
-        // Malformed JSON -> an actionable error, NOT a silent drop: 'dcs' is the sole surface for the
-        // feature, so a present-but-malformed value must be surfaced rather than dropped (which would let a
-        // stray 'properties' apply, or misreport 'properties is required').
-        params.put("dcs", "{not json"); //$NON-NLS-1$ //$NON-NLS-2$
-        ModifyMetadataTool.DcsArg malformed = ModifyMetadataTool.parseDcsArg(params);
-        assertNull("a malformed 'dcs' arg yields no spec", malformed.spec); //$NON-NLS-1$
-        assertNotNull("a malformed 'dcs' arg must be an error, not a silent drop", //$NON-NLS-1$
-            malformed.error);
-        assertTrue("the refusal must be a ToolResult error json", //$NON-NLS-1$
-            malformed.error.contains("\"error\"")); //$NON-NLS-1$
-        assertTrue("the refusal must name the 'dcs' arg", malformed.error.contains("dcs")); //$NON-NLS-1$ //$NON-NLS-2$
-
-        // A non-object JSON (an array) -> the same actionable error: the arg is a single spec object.
-        params.put("dcs", "[1,2,3]"); //$NON-NLS-1$ //$NON-NLS-2$
-        ModifyMetadataTool.DcsArg nonObject = ModifyMetadataTool.parseDcsArg(params);
-        assertNull("a non-object 'dcs' arg yields no spec", nonObject.spec); //$NON-NLS-1$
-        assertNotNull("a non-object 'dcs' arg must be an error", nonObject.error); //$NON-NLS-1$
-
-        // A well-formed JSON object parses through (its members preserved, whitespace-trimmed).
-        params.put("dcs", "  {\"dataSets\":[]}  "); //$NON-NLS-1$ //$NON-NLS-2$
-        ModifyMetadataTool.DcsArg valid = ModifyMetadataTool.parseDcsArg(params);
-        assertNull("a well-formed 'dcs' arg carries no error", valid.error); //$NON-NLS-1$
-        assertNotNull("a well-formed 'dcs' object must parse", valid.spec); //$NON-NLS-1$
-        assertTrue("the parsed object must carry its members", valid.spec.has("dataSets")); //$NON-NLS-1$ //$NON-NLS-2$
-    }
-
     // ===== method-reference guard dispatch (a job/subscription must be bound to an EXISTING, Exported,
     // Server method) =================================================================================
     //
@@ -1324,8 +1605,9 @@ public class ModifyMetadataToolTest
         module.setName("Calc"); //$NON-NLS-1$
         config.getCommonModules().add(module);
         ScheduledJob job = MdClassFactory.eINSTANCE.createScheduledJob();
-        assertEquals("a validated methodName must serialize WITHOUT the type prefix", //$NON-NLS-1$
-            "Calc.Add", ModifyMetadataTool.canonicalMethodReference(config, job, "methodName", "CommonModule.Calc.Add")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+        assertEquals("a validated methodName must serialize with the English CommonModule prefix", //$NON-NLS-1$
+            "CommonModule.Calc.Add", //$NON-NLS-1$
+            ModifyMetadataTool.canonicalMethodReference(config, job, "methodName", "CommonModule.Calc.Add")); //$NON-NLS-1$ //$NON-NLS-2$
         EventSubscription sub = MdClassFactory.eINSTANCE.createEventSubscription();
         assertEquals("a validated handler must serialize WITH the English CommonModule prefix", //$NON-NLS-1$
             "CommonModule.Calc.Add", ModifyMetadataTool.canonicalMethodReference(config, sub, "handler", "Calc.Add")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
@@ -1333,10 +1615,24 @@ public class ModifyMetadataToolTest
         assertEquals("x.y", ModifyMetadataTool.canonicalMethodReference(config, module, "methodName", "x.y")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
     }
 
+    @Test
+    public void testCanonicalMethodReferencePrefixesShortScheduledJobInput()
+    {
+        Configuration config = MdClassFactory.eINSTANCE.createConfiguration();
+        CommonModule module = MdClassFactory.eINSTANCE.createCommonModule();
+        module.setName("Calc"); //$NON-NLS-1$
+        config.getCommonModules().add(module);
+        ScheduledJob job = MdClassFactory.eINSTANCE.createScheduledJob();
+
+        assertEquals("a short ScheduledJob methodName must be stored with the CommonModule prefix", //$NON-NLS-1$
+            "CommonModule.Calc.Add", //$NON-NLS-1$
+            ModifyMetadataTool.canonicalMethodReference(config, job, "methodName", "Calc.Add")); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
     // ===== XDTO package member payload dispatch guards (issue #183 stream 1) =========================
     //
     // An XDTO ObjectType/Property member is edited through the SAME 'properties' surface as an ordinary
-    // mdclass member (there is no dedicated 'xdto' payload key, unlike 'dcs'/'template'), so the guard is
+    // mdclass member (there is no dedicated 'xdto' payload key, unlike 'template'), so the guard is
     // narrower: refuse a Role / membership content payload (neither applies to an XDTO member), then
     // require a non-empty 'properties'. The pure guard (xdtoMemberPayloadError) and the "member not
     // found" message builders are covered here; the live BM materialize + write + force-export is
@@ -1840,6 +2136,87 @@ public class ModifyMetadataToolTest
                 MetadataLanguageUtils.cp(0x0422, 0x0430, 0x0431, 0x043b, 0x0438, 0x0446, 0x0430, 0x0417,
                     0x043d, 0x0430, 0x0447, 0x0435, 0x043d, 0x0438, 0x0439), // TablicaZnachenij
                 "DocumentRef.Invoice"))); //$NON-NLS-1$
+    }
+
+    // ===== integer and long scalar coercion (#451) ===============================================
+    //
+    // The real ELong properties are WebService.sessionMaxAge / HTTPService.sessionMaxAge, which live
+    // on the mdclass path. These tests drive the form-member path instead, because that is the seam
+    // already exposed for tests - and it proves the same code: both paths funnel every property
+    // through the one private prepare(...), whose `switch (info.valueKind)` owns the INTEGER / LONG
+    // branches. A synthetic ELong feature stands in for the platform's, so the case needs no live EDT.
+
+    @Test
+    public void testELongPropertyPreparesLongWrapper() throws Exception
+    {
+        Object prepared = preparedScalarValue(numericMember(EcorePackage.Literals.ELONG),
+            "sessionMaxAge", "60"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue("an ELong feature must be prepared as java.lang.Long, got " //$NON-NLS-1$
+            + prepared.getClass().getName(), prepared instanceof Long);
+        assertEquals(Long.valueOf(60L), prepared);
+    }
+
+    @Test
+    public void testELongPropertyAcceptsValueBeyondIntegerRange()
+    {
+        for (String value : new String[] {"2147483648", Long.toString(Long.MIN_VALUE), //$NON-NLS-1$
+            Long.toString(Long.MAX_VALUE)})
+        {
+            String verdict = neverAsking().formRetypeVerdict(null, null,
+                numericMember(EcorePackage.Literals.ELONG),
+                Collections.singletonList(prop("sessionMaxAge", value)), report()); //$NON-NLS-1$
+
+            assertNull("a legal long value must not be rejected as an invalid integer: " //$NON-NLS-1$
+                + value + ": " + verdict, verdict); //$NON-NLS-1$
+        }
+    }
+
+    @Test
+    public void testEIntPropertyStillPreparesIntegerWrapper() throws Exception
+    {
+        Object prepared = preparedScalarValue(numericMember(EcorePackage.Literals.EINT),
+            "retryCount", "60"); //$NON-NLS-1$ //$NON-NLS-2$
+
+        assertTrue("an EInt feature must remain java.lang.Integer, got " //$NON-NLS-1$
+            + prepared.getClass().getName(), prepared instanceof Integer);
+        assertEquals(Integer.valueOf(60), prepared);
+    }
+
+    private static EObject numericMember(EDataType type)
+    {
+        EcoreFactory factory = EcoreFactory.eINSTANCE;
+        EPackage pkg = factory.createEPackage();
+        pkg.setName("numericlike"); //$NON-NLS-1$
+        pkg.setNsPrefix("numericlike"); //$NON-NLS-1$
+        pkg.setNsURI("http://ditrix.com/test/numericlike/451/" + type.getName()); //$NON-NLS-1$
+
+        EClass memberClass = factory.createEClass();
+        memberClass.setName("NumericMember"); //$NON-NLS-1$
+        EAttribute numeric = factory.createEAttribute();
+        numeric.setName(type == EcorePackage.Literals.ELONG ? "sessionMaxAge" : "retryCount"); //$NON-NLS-1$ //$NON-NLS-2$
+        numeric.setEType(type);
+        memberClass.getEStructuralFeatures().add(numeric);
+        pkg.getEClassifiers().add(memberClass);
+        return new DynamicEObjectImpl(memberClass);
+    }
+
+    /** Reads the scalar built by the same private preparation path the write transaction applies. */
+    private static Object preparedScalarValue(EObject member, String name, String value) throws Exception
+    {
+        Method prepare = ModifyMetadataTool.class.getDeclaredMethod("prepareFormMemberChanges", //$NON-NLS-1$
+            MetadataScope.class, Version.class, EObject.class, List.class, MdNameNormalizer.Report.class);
+        prepare.setAccessible(true);
+        List<?> changes = (List<?>)prepare.invoke(new ModifyMetadataTool(), null, null, member,
+            Collections.singletonList(prop(name, value)), report());
+
+        Object holderChange = changes.get(0);
+        Field changeField = holderChange.getClass().getDeclaredField("change"); //$NON-NLS-1$
+        changeField.setAccessible(true);
+        Object preparedChange = changeField.get(holderChange);
+        Field scalarValue = preparedChange.getClass().getDeclaredField("scalarValue"); //$NON-NLS-1$
+        scalarValue.setAccessible(true);
+        return scalarValue.get(preparedChange);
     }
 
     // ===== a contained AdjustableBoolean flag is prepared as a plain boolean (#382) ===============

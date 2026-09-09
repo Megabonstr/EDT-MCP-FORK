@@ -1,7 +1,7 @@
 """
 e2e tests for terminate_launch (kind: read).
 
-terminate_launch kills/disconnects 1С launches started from THIS EDT instance,
+terminate_launch kills/disconnects 1C launches started from THIS EDT instance,
 selected via ONE of three mutually-exclusive modes:
   - launchConfigurationName               (single live launch by exact config name)
   - projectName + applicationId           (single live launch by project + appId)
@@ -43,7 +43,7 @@ DIFF: terminate_launch operates on the running infobase / Eclipse launch manager
 NEVER on the git-tracked project tree. EVERY test asserts assert_no_diff() — a
 debug/runtime tool that mutated TestConfiguration source would be a bug.
 
-We deliberately do NOT start a real infobase / debug_launch (heavy, not configured
+We deliberately do NOT start a real infobase / launch (heavy, not configured
 in this EDT); the sentinel + the full validation negative matrix IS the coverage.
 
 Fixture inventory used (TestConfiguration, English Names): the project itself
@@ -105,7 +105,19 @@ def test_all_confirmed_no_live_launch_returns_clear_not_found_sentinel():
 
     Mutation-sensitive: a tool that mass-terminated (or errored) on an empty
     launch set, or rendered a single-config scope, fails here.
+
+    "with nothing running" is a PRECONDITION this test must establish, not one it may
+    assume. Earlier tests in the run start the standalone server, and a force-killed EDT
+    leaves an already-terminated entry behind that survives -clean restarts; either way
+    the first all-mode call answers `already_terminated` and this test failed for a reason
+    that has nothing to do with the sentinel it exists to check. Draining first is exactly
+    what all=true,confirm=true means, so the setup is the tool's own documented behaviour -
+    and the assertion then lands on a launch set that is genuinely empty.
     """
+    for _ in range(4):
+        drain = call("terminate_launch", {"all": True, "confirm": True})
+        if "**Result:** not_found" in (drain.text or ""):
+            break
     r = call("terminate_launch", {"all": True, "confirm": True})
     assert_ok(r, "all=true,confirm=true with nothing running")
     assert_contains(r.text, "**Result:** not_found",

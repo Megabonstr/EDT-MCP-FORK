@@ -189,22 +189,47 @@ public final class MetadataTypeUtils
             "\u0411\u043E\u0442", "\u0411\u043E\u0442\u044B"), // Бот, Боты //$NON-NLS-1$ //$NON-NLS-2$
 
         WEB_SOCKET_CLIENT("WebSocketClient", "WebSocketClients", "webSocketClients", null, //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
-            "WebSocket\u041A\u043B\u0438\u0435\u043D\u0442"); // WebSocketКлиент //$NON-NLS-1$
+            "WebSocket\u041A\u043B\u0438\u0435\u043D\u0442"), // WebSocketКлиент //$NON-NLS-1$
+
+        // The two STANDALONE types: an external data processor / report is a ROOT object of an
+        // external-objects project (V8ExternalObjectsNature), not a member of any Configuration
+        // collection - hence no configReferenceName. They resolve through MetadataScope, which
+        // knows that root; they belong in THIS catalogue because their FQN type token is
+        // bilingual exactly like every other top-level type and has to normalize the same way.
+        EXTERNAL_DATA_PROCESSOR("ExternalDataProcessor", "ExternalDataProcessors", null, //$NON-NLS-1$ //$NON-NLS-2$
+            "ExternalDataProcessors", true, //$NON-NLS-1$
+            "\u0412\u043D\u0435\u0448\u043D\u044F\u044F\u041E\u0431\u0440\u0430\u0431\u043E\u0442\u043A\u0430", // ВнешняяОбработка //$NON-NLS-1$
+            "\u0412\u043D\u0435\u0448\u043D\u0438\u0435\u041E\u0431\u0440\u0430\u0431\u043E\u0442\u043A\u0438"), // ВнешниеОбработки //$NON-NLS-1$
+
+        EXTERNAL_REPORT("ExternalReport", "ExternalReports", null, "ExternalReports", true, //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "\u0412\u043D\u0435\u0448\u043D\u0438\u0439\u041E\u0442\u0447\u0435\u0442", // ВнешнийОтчет //$NON-NLS-1$
+            "\u0412\u043D\u0435\u0448\u043D\u0438\u0435\u041E\u0442\u0447\u0435\u0442\u044B"); // ВнешниеОтчеты //$NON-NLS-1$
 
         private final String englishSingular;
         private final String englishPlural;
         private final String configReferenceName;
         private final String directoryName; // null if type has no src/ directory
+        /** A ROOT object of its own project (external data processor / report), not a Configuration member. */
+        private final boolean standalone;
         private final String[] russianNames;
 
         MetadataTypeInfo(String englishSingular, String englishPlural,
                          String configReferenceName, String directoryName,
                          String... russianNames)
         {
+            this(englishSingular, englishPlural, configReferenceName, directoryName, false,
+                russianNames);
+        }
+
+        MetadataTypeInfo(String englishSingular, String englishPlural, // NOSONAR signature is inherent / public-or-test-contract; a parameter-object would not improve clarity
+                         String configReferenceName, String directoryName, boolean standalone,
+                         String... russianNames)
+        {
             this.englishSingular = englishSingular;
             this.englishPlural = englishPlural;
             this.configReferenceName = configReferenceName;
             this.directoryName = directoryName;
+            this.standalone = standalone;
             this.russianNames = russianNames;
         }
 
@@ -221,6 +246,20 @@ public final class MetadataTypeUtils
         public String getConfigReferenceName()
         {
             return configReferenceName;
+        }
+
+        /**
+         * Whether this type is a STANDALONE root object of its own project (an external data
+         * processor / report) rather than an entry in a {@code Configuration} collection. The two
+         * are mutually exclusive by construction: a standalone type has no
+         * {@link #getConfigReferenceName() configuration collection}, and every configuration type
+         * has one.
+         *
+         * @return {@code true} for an external-objects root type
+         */
+        public boolean isStandalone()
+        {
+            return standalone;
         }
 
         /** @return directory name in src/, or {@code null} if not applicable */
@@ -381,6 +420,10 @@ public final class MetadataTypeUtils
         putNestedKind(m, "Table", "Tables", //$NON-NLS-1$ //$NON-NLS-2$
             cp(0x0422, 0x0430, 0x0431, 0x043b, 0x0438, 0x0446, 0x0430),
             cp(0x0422, 0x0430, 0x0431, 0x043b, 0x0438, 0x0446, 0x044b));
+        // Parameter (ru: parametr / parametry) - the form PARAMETER member, issue #396.
+        putNestedKind(m, "Parameter", "Parameters", //$NON-NLS-1$ //$NON-NLS-2$
+            cp(0x041f, 0x0430, 0x0440, 0x0430, 0x043c, 0x0435, 0x0442, 0x0440),
+            cp(0x041f, 0x0430, 0x0440, 0x0430, 0x043c, 0x0435, 0x0442, 0x0440, 0x044b));
         // Handler (ru: obrabotchik / obrabotchiki)
         putNestedKind(m, "Handler", "Handlers", //$NON-NLS-1$ //$NON-NLS-2$
             cp(0x041e, 0x0431, 0x0440, 0x0430, 0x0431, 0x043e, 0x0442, 0x0447, 0x0438, 0x043a),
@@ -669,6 +712,53 @@ public final class MetadataTypeUtils
             return normalized + rest;
         }
         return fqn;
+    }
+
+    /**
+     * Canonicalizes a full FQN to its ALL-ENGLISH form, translating <b>every</b> structural
+     * segment while copying every programmatic Name - and the case of both - verbatim.
+     * <p>
+     * This is the address shape the comparison engine matches against: a comparison-scope symlink
+     * is an EDT qualified name whose structural tokens are the English literals, and the engine has
+     * no bilingual branch anywhere, so a Russian address must arrive already translated or it
+     * matches nothing at all - silently, because a scope that selects no object is still a legal
+     * scope.
+     * <p>
+     * It exists beside its two neighbours because neither can serve that use:
+     * <ul>
+     *   <li>{@link #normalizeFqn(String)} translates the LEADING token only, so
+     *       {@code Справочник.Товары.Форма.ФормаЭлемента} keeps its Russian {@code Форма};</li>
+     *   <li>{@link #getAllFqnVariants(String)} does translate every segment, but LOWERCASES what it
+     *       returns - right for matching markers case-insensitively, wrong for a symlink, which is
+     *       compared verbatim.</li>
+     * </ul>
+     * <p>
+     * Examples:
+     * <ul>
+     *   <li>{@code "Справочник.Товары.Форма.ФормаЭлемента"} -&gt;
+     *       {@code "Catalog.Товары.Form.ФормаЭлемента"}</li>
+     *   <li>{@code "Catalog.Товары.Form.ФормаЭлемента"} -&gt; returned byte-identical</li>
+     *   <li>{@code "Catalogs.Products"} -&gt; {@code "Catalog.Products"} (plural to singular)</li>
+     * </ul>
+     * <p>
+     * A segment in neither catalogue is copied verbatim - exactly as the all-segment translation
+     * behind {@link #getAllFqnVariants} already does, so one unknown token never mangles the rest of
+     * the address. Whether the LEADING token is a known type at all is deliberately NOT decided
+     * here: {@link #toEnglishSingular(String)} answers that, and only the caller knows whether an
+     * unknown token is a refusal or a pass-through.
+     *
+     * @param fqn a full dot-separated FQN; {@code null}, empty, a single token or a leading-dot
+     *     string is returned unchanged - there is no {@code Type.Name} shape to translate, the same
+     *     guard {@link #getAllFqnVariants} applies
+     * @return the all-English FQN with the case of every programmatic Name preserved
+     */
+    public static String toCanonicalEnglishFqn(String fqn)
+    {
+        if (fqn == null || fqn.indexOf('.') <= 0)
+        {
+            return fqn;
+        }
+        return translateStructuralSegments(fqn.split("\\.", -1), true, 0); //$NON-NLS-1$
     }
 
     /**

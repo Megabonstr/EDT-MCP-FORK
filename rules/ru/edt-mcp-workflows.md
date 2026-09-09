@@ -75,11 +75,11 @@
 
 ## 7. Отладка
 
-`debug_launch` принимает либо **`launchConfigurationName`** (готовая launch-конфигурация из EDT, в т.ч. Attach), либо пару **`projectName` + `applicationId`** (без существующей конфигурации). Запоминай `applicationId` из ответа — дальше он нужен для `wait_for_break`, `start_profiling`, `get_applications`.
+`launch` принимает либо **`launchConfigurationName`** (готовая launch-конфигурация из EDT, в т.ч. Attach), либо пару **`projectName` + `applicationId`** (без существующей конфигурации). Запоминай `applicationId` из ответа — дальше он нужен для `wait_for_break`, `start_profiling`, `get_applications`.
 
 1. `list_configurations` или `get_applications` — узнать, что запускать.
 2. `set_breakpoint` с `projectName`+`module`+`lineNumber` — точки останова.
-3. `debug_launch` — запуск. Сохрани `applicationId` из ответа.
+3. `launch` — запуск. Сохрани `applicationId` из ответа.
 4. Пользователь выполняет действие в 1С:Предприятии.
 5. `wait_for_break` с `applicationId` — ждёшь suspend. В ответе будет `threadId` и `frameRef`.
 6. `debug_status` → `get_variables` (`frameRef` или `threadId`+`frameIndex`) → `evaluate_expression` → `step` (`threadId` + `kind`: `over`|`into`|`out`) → `resume`.
@@ -87,27 +87,44 @@
 
 ## 8. Запуск приложения и обновление ИБ
 
-- Запуск в режиме предприятия (через дебаг или просто проверить): `debug_launch` по `launchConfigurationName` или `projectName`+`applicationId`.
+- Запуск в режиме предприятия (через дебаг или просто проверить): `launch` по `launchConfigurationName` или `projectName`+`applicationId`.
 - Обновление информационной базы: `update_database` с `launchConfigurationName` или `projectName`+`applicationId`. Используй после правок метаданных.
 
 ## 9. Прогон тестов YAxUnit
 
 - Обычный прогон: `run_yaxunit_tests` с `projectName` — JUnit XML парсится, ответ в Markdown.
-- При падении и непонятности: `debug_yaxunit_tests` + `set_breakpoint` в нужный тест → дальше как раздел 7.
+- При падении и непонятности: `set_breakpoint` в нужный тест →
+  `run_yaxunit_tests(debug=true)`. Если запуск вернул pending-состояние,
+  сохрани его `jobId` и опрашивай именно эту задачу через `get_job_status`, пока
+  она не вернёт целевой launch handle или терминальную ошибку; только после
+  этого переходи к `wait_for_break`, дальше как раздел 7. Если согласованный с
+  пользователем срок истёк, не отказывайся от владения: либо отмени задачу с
+  разрешения пользователя и подтверди терминальную очистку, либо получи явное
+  согласие на передачу сохранённого `jobId` и обязанностей по принадлежащим
+  задаче точкам останова. Без отмены или передачи запуск остаётся незавершённым,
+  и согласование состояния необходимо продолжать.
 
 ## 10. Профилирование
 
 1. Должен быть активный debug-сеанс (см. раздел 7), у тебя на руках `applicationId`.
-2. `start_profiling` с `applicationId` — toggle ON.
+2. `start_profiling` с `applicationId`. Продолжай только если результат
+   подтверждает, что именно этот вызов запустил новое окно профилирования;
+   иначе сохрани уже активное измерение и сообщи, что атрибутируемое окно нельзя
+   создать, не нарушив работу его владельца.
 3. Выполняешь сценарий в 1С:Предприятии.
-4. `start_profiling` с тем же `applicationId` ещё раз — toggle OFF.
-5. `get_profiling_results` (опц. `moduleFilter`, `minFrequency`) — per-module/per-line, call counts, timing.
+4. `stop_profiling` с тем же `applicationId` вызывай только для окна
+   профилирования, запущенного и поэтому принадлежащего этой задаче.
+5. Читай `get_profiling_results`, пока глобальная поверхность профилирования
+   остаётся свободной; иначе считай результат неатрибутированным, если его
+   принадлежность нельзя подтвердить независимо.
 
 ## 11. Работа с формами
 
 1. `get_form_layout_snapshot` с `projectName`+`formPath`, `mode: compact` — структура формы как YAML.
 2. Если нужно визуально — `get_form_screenshot` с `projectName`+`formPath`.
-3. Правки `.form` — через `Read`+`Edit` (соблюдай правила `edt-metadata.md`).
+3. Для изменений используй структурные инструменты метаданных/форм. Прямая
+   правка `.form` допустима только как явно разрешённый крайний вариант по
+   `common-safety.md` и `edt-metadata.md`.
 
 ## 12. Анализ ошибок и проверок
 

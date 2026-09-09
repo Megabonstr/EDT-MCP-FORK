@@ -23,6 +23,7 @@ import com.ditrix.edt.mcp.server.protocol.jsonrpc.ToolCallResult;
 import com.ditrix.edt.mcp.server.protocol.jsonrpc.ToolsListResult;
 import com.ditrix.edt.mcp.server.tools.IMcpTool;
 import com.ditrix.edt.mcp.server.tools.McpToolRegistry;
+import com.ditrix.edt.mcp.server.utils.DcsXmlCodec;
 import com.ditrix.edt.mcp.server.utils.GuideRenderer;
 import com.ditrix.edt.mcp.server.utils.InfobaseAuthDialogSuppressor;
 import com.ditrix.edt.mcp.server.utils.Log;
@@ -56,17 +57,53 @@ public class McpProtocolHandler
     /** JSON key flagging a structured success/failure outcome. */
     private static final String KEY_SUCCESS = "success"; //$NON-NLS-1$
 
+    /** Maximum user-authored signal text retained in a tool result, including the ellipsis. */
+    public static final int MAX_USER_SIGNAL_MESSAGE_CHARS = 512;
+
+    /**
+     * Maximum serialized growth when {@code userSignal} is added to a non-empty JSON object.
+     * The fixed member {@code ,"userSignal":{"type":"BACKGROUND","message":""}} is 48
+     * characters (BACKGROUND is the longest enum token), and any one of the 512 retained UTF-16
+     * characters may require a six-character JSON Unicode escape: {@code 48 + 512 * 6 = 3120}.
+     * XML paging reserves exactly this amount before the protocol can append the member.
+     */
+    public static final int MAX_USER_SIGNAL_JSON_AUGMENTATION_CHARS =
+        48 + MAX_USER_SIGNAL_MESSAGE_CHARS * 6;
+
+    /**
+     * Maximum Markdown growth after tool execution: the fixed
+     * {@code \n\n---\n**USER SIGNAL:** } banner is 23 characters and the retained message is at
+     * most 512, so {@code 23 + 512 = 535}. DCS Markdown paging reserves this exact headroom.
+     */
+    public static final int MAX_MARKDOWN_USER_SIGNAL_AUGMENTATION_CHARS =
+        23 + MAX_USER_SIGNAL_MESSAGE_CHARS;
+
+    private static final String USER_SIGNAL_ELLIPSIS = "\u2026"; //$NON-NLS-1$
+
+    /**
+     * Largest serialized {@code capabilities} object the server will keep for a client. Every
+     * session retains the one its client declared, so without a ceiling a caller could pin a
+     * request-body-sized tree per session; a genuine MCP capabilities object is a few hundred
+     * characters. A bigger one is treated exactly like a malformed one: the permissive default.
+     */
+    static final int MAX_RETAINED_CAPABILITIES_CHARS = 4096;
+
     private final McpToolRegistry toolRegistry;
 
     /**
-     * Capabilities the connected client declared in its last {@code initialize}
-     * request. Server-scoped (NOT per session) because this EDT MCP server is
-     * effectively single-client over localhost: one EDT workbench serves one
-     * connected MCP client at a time, so the last initialize wins. {@code volatile}
-     * because initialize and tools/call can be processed on different transport
-     * threads. Defaults to {@link ClientCapabilities#ABSENT} so the behaviour
-     * before any initialize (and for a client that sends no capabilities) is the
-     * permissive default — in particular structuredContent stays emitted.
+     * Capabilities the last {@code initialize} declared, kept for callers that have no session
+     * of their own — the in-process bridge, and any caller of the session-less
+     * {@link #processRequest(String)} overloads.
+     * <p>
+     * The HTTP transport does NOT read this: it hands down the capabilities stored on the
+     * SESSION the request arrived on. This slot used to be the only answer, and being
+     * server-scoped it meant the last client to initialize decided how every other client's
+     * {@code tools/call} was formatted (issue #564).
+     * <p>
+     * {@code AtomicReference} because initialize and tools/call can be processed on different
+     * transport threads. Defaults to {@link ClientCapabilities#ABSENT} so the behaviour before
+     * any initialize (and for a client that sends no capabilities) is the permissive default —
+     * in particular structuredContent stays emitted.
      */
     private final AtomicReference<ClientCapabilities> clientCapabilities =
         new AtomicReference<>(ClientCapabilities.ABSENT);
@@ -98,12 +135,12 @@ public class McpProtocolHandler
      * / ping / resources) flows, so the request/response HISTORY recorder (#254) is
      * hooked here — once per message, in a {@code finally}, and strictly guarded so
      * it can never alter the returned response nor propagate a failure onto the wire
-     * path. The returned value is {@link #dispatch(JsonRpcRequest)}'s EXACT String (no
+     * path. The returned value is {@link #dispatch(JsonRpcRequest, ClientCapabilities)}'s EXACT String (no
      * envelope re-serialization).
      * <p>
      * The request is parsed ONCE here and the parsed form is reused for both dispatch
      * and the recorder, so a large tool-call payload is never parsed twice on this hot
-     * path — {@link #dispatch(JsonRpcRequest)} takes the already-parsed request and the
+     * path — {@link #dispatch(JsonRpcRequest, ClientCapabilities)} takes the already-parsed request and the
      * {@code finally} reads method/toolName from it instead of re-parsing.
      *
      * @param requestBody the JSON request body
@@ -112,15 +149,60 @@ public class McpProtocolHandler
      */
     public String processRequest(String requestBody)
     {
+        // The clock starts BEFORE the parse, because deserializing a multi-megabyte
+        // tool-call payload is part of the exchange the history reports.
         long startNanos = System.nanoTime();
         // Parse once at the choke point; parse() swallows a JSON syntax error and
         // returns null, and dispatch() treats a null request as an invalid request —
         // exactly as before, when the parse happened inside dispatch.
-        JsonRpcRequest request = parse(requestBody);
+        return processRequest(requestBody, parse(requestBody), startNanos);
+    }
+
+    /**
+     * Same, for a caller that has already parsed the body — the HTTP transport parses it to
+     * decide which path the request takes, and hands the result down instead of parsing twice.
+     * The raw body is still needed: it is what the history recorder stores.
+     * <p>
+     * The caller also hands down WHEN it started, taken before its own parse: the recorded
+     * duration is the whole exchange, and a transport that parses first must not be able to
+     * hide its parse time from the history.
+     *
+     * @param requestBody the JSON request body
+     * @param request the body parsed by the caller, or {@code null} on a JSON syntax error
+     *            (dispatched as an invalid request, exactly like a parse failure here)
+     * @param startNanos {@link System#nanoTime()} as read by the caller before it parsed
+     * @return JSON response with correct id from request ({@code null} for a
+     *         notification answered with 202 Accepted)
+     */
+    public String processRequest(String requestBody, JsonRpcRequest request, long startNanos)
+    {
+        return processRequest(requestBody, request, startNanos, null);
+    }
+
+    /**
+     * Same, for the HTTP transport, which knows WHICH client this request belongs to and hands
+     * down the capabilities that client declared at its own {@code initialize}.
+     * <p>
+     * A {@code null} here means "no session behind this call" - the in-process bridge, and every
+     * caller that predates sessions - and falls back to the server-scoped slot, which is what
+     * those callers have always been formatted by.
+     *
+     * @param requestBody the JSON request body
+     * @param request the body parsed by the caller, or {@code null} on a JSON syntax error
+     * @param startNanos {@link System#nanoTime()} as read by the caller before it parsed
+     * @param sessionCapabilities the capabilities of the session this request arrived on, or
+     *            {@code null} to use the server-scoped ones
+     * @return JSON response with correct id from request ({@code null} for a
+     *         notification answered with 202 Accepted)
+     */
+    public String processRequest(String requestBody, JsonRpcRequest request, long startNanos,
+        ClientCapabilities sessionCapabilities)
+    {
         String response = null;
         try
         {
-            response = dispatch(request);
+            response = dispatch(request,
+                sessionCapabilities != null ? sessionCapabilities : clientCapabilities.get());
         }
         finally
         {
@@ -217,10 +299,12 @@ public class McpProtocolHandler
      *
      * @param request the parsed JSON-RPC request, or {@code null} for an unparseable
      *        body (handled as an invalid request)
+     * @param capabilities the capabilities of the client this request belongs to (its session's,
+     *        or the server-scoped ones for a caller with no session)
      * @return JSON response with correct id from request ({@code null} for a
      *         notification answered with 202 Accepted)
      */
-    private String dispatch(JsonRpcRequest request)
+    private String dispatch(JsonRpcRequest request, ClientCapabilities capabilities)
     {
         // Per JSON-RPC 2.0: when the id cannot be determined (parse error /
         // invalid request) the error response id MUST be null. A real id from
@@ -267,13 +351,13 @@ public class McpProtocolHandler
             // Check for tools/list method
             if (McpConstants.METHOD_TOOLS_LIST.equals(method))
             {
-                return buildToolsListResponse(requestId);
+                return buildToolsListResponse(requestId, capabilities);
             }
             
             // Check for tools/call method
             if (McpConstants.METHOD_TOOLS_CALL.equals(method))
             {
-                return handleToolCall(request, requestId);
+                return handleToolCall(request, requestId, capabilities);
             }
 
             // Check for resources/list method (serves the per-tool guide:// docs)
@@ -353,7 +437,7 @@ public class McpProtocolHandler
     /**
      * Handles a tools/call request.
      */
-    private String handleToolCall(JsonRpcRequest request, Object requestId)
+    private String handleToolCall(JsonRpcRequest request, Object requestId, ClientCapabilities capabilities)
     {
         String toolName = request != null ? request.getToolName() : null;
         
@@ -364,13 +448,16 @@ public class McpProtocolHandler
             return buildErrorResponse(McpConstants.ERROR_METHOD_NOT_FOUND, "Tool not found: " + toolName, requestId); //$NON-NLS-1$
         }
 
-        // Check if tool is enabled
+        // Check if tool is enabled. The refusal is flagged isError: nothing ran, so a success
+        // would record an empty answer as the tool's output - and enablement is the one input to
+        // the outputSchema promise that can change UNDER a client (a JSON tool listed with its
+        // schema, switched off before the next call), which only an error result is exempt from.
         if (!toolRegistry.isToolEnabled(toolName))
         {
             String msg = "Tool '" + toolName + "' is disabled by the user. " //$NON-NLS-1$ //$NON-NLS-2$
                 + "If this functionality is needed, ask the user to enable it: " //$NON-NLS-1$
                 + "EDT Preferences \u2192 MCP Server \u2192 Tools tab \u2192 check '" + toolName + "'."; //$NON-NLS-1$ //$NON-NLS-2$
-            return buildToolCallTextResponse(msg, requestId);
+            return GsonProvider.toJson(JsonRpcResponse.success(requestId, ToolCallResult.refusal(msg)));
         }
         
         Activator.logInfo("Processing tools/call: " + tool.getName()); //$NON-NLS-1$
@@ -401,14 +488,10 @@ public class McpProtocolHandler
         }
         
         // Check if plain text mode is enabled (Cursor compatibility).
-        // Activator.getDefault() can be null during a shutdown race; in that
-        // case fall back to the safe default (structured content, not plain text).
-        boolean plainTextMode = Activator.getDefault() != null
-            && Activator.getDefault().getPreferenceStore()
-                .getBoolean(PreferenceConstants.PREF_PLAIN_TEXT_MODE);
+        boolean plainTextMode = isPlainTextMode();
 
         // Return response based on tool's declared response type
-        return buildToolCallResponse(tool, result, signal, plainTextMode, requestId, params);
+        return buildToolCallResponse(tool, result, signal, plainTextMode, requestId, params, capabilities);
     }
 
     /**
@@ -500,10 +583,11 @@ public class McpProtocolHandler
      * @param plainTextMode whether Cursor-compatible plain-text mode is enabled
      * @param requestId the JSON-RPC request id to echo
      * @param params the tool params (used only for the result file name)
+     * @param capabilities the calling client's declared capabilities, consulted by the JSON path
      * @return the serialized JSON-RPC response
      */
     private String buildToolCallResponse(IMcpTool tool, String result, UserSignal signal,
-        boolean plainTextMode, Object requestId, Map<String, String> params)
+        boolean plainTextMode, Object requestId, Map<String, String> params, ClientCapabilities capabilities)
     {
         // Per-call response type: a tool whose caller can choose the output format (e.g.
         // list_projects' format=md|json) decides from the arguments; every other tool falls back to
@@ -511,7 +595,7 @@ public class McpProtocolHandler
         switch (tool.getResponseType(params))
         {
             case JSON:
-                return buildJsonToolResponse(tool, result, signal, plainTextMode, requestId);
+                return buildJsonToolResponse(tool, result, signal, plainTextMode, requestId, capabilities);
             case MARKDOWN:
                 return buildMarkdownToolResponse(tool, result, signal, plainTextMode, requestId,
                     params);
@@ -546,7 +630,7 @@ public class McpProtocolHandler
         // Append user signal as markdown
         if (signal != null)
         {
-            result = result + "\n\n---\n**USER SIGNAL:** " + signal.getMessage();
+            result = addUserSignalToMarkdown(result, signal);
         }
         // In plain text mode, return markdown as plain text instead of embedded resource
         if (plainTextMode)
@@ -644,10 +728,12 @@ public class McpProtocolHandler
      * @param signal a user signal raised during execution, or {@code null}
      * @param plainTextMode whether Cursor-compatible plain-text mode is enabled
      * @param requestId the JSON-RPC request id to echo
+     * @param capabilities the calling client's declared capabilities; only an explicit opt-out
+     *        here suppresses the structured payload
      * @return the serialized JSON-RPC response
      */
     private String buildJsonToolResponse(IMcpTool tool, String result, UserSignal signal,
-        boolean plainTextMode, Object requestId)
+        boolean plainTextMode, Object requestId, ClientCapabilities capabilities)
     {
         // For JSON, add signal as a separate field if present
         if (signal != null)
@@ -655,24 +741,18 @@ public class McpProtocolHandler
             // Parse JSON and add userSignal field
             result = addUserSignalToJson(result, signal);
         }
-        // In plain text mode, return markdown as plain text instead of structured content. A FAILED
-        // payload keeps isError:true (with the real message in the text channel) - suppressing the
-        // structured payload must never make a failure look like a success.
-        if (plainTextMode)
+        // Which channels carry the payload. The only case that drops structuredContent is the
+        // client's own opt-out, which tools/list reads too - see jsonDeliveryFor.
+        switch (jsonDeliveryFor(plainTextMode, capabilities))
         {
-            return buildTextOnlyJsonResponse(result, requestId);
+            case TEXT_ONLY:
+                return buildTextOnlyJsonResponse(result, requestId);
+            case TEXT_PAYLOAD_AND_STRUCTURED:
+                return buildPlainTextJsonResponse(result, requestId);
+            case STRUCTURED:
+            default:
+                return buildToolCallJsonResponse(result, requestId, tool.getName());
         }
-        // Capability gate for structuredContent. By DEFAULT (no capabilities,
-        // or a client that does not explicitly opt out) this is true, so the
-        // structuredContent response below is emitted exactly as before — the
-        // no-regression guarantee. Only a client that EXPLICITLY declared it
-        // cannot accept structuredContent suppresses it; the JSON payload is
-        // then delivered as text so the data is still returned.
-        if (!clientCapabilities.get().allowsStructuredContent())
-        {
-            return buildTextOnlyJsonResponse(result, requestId);
-        }
-        return buildToolCallJsonResponse(result, requestId, tool.getName());
     }
 
     /**
@@ -695,7 +775,101 @@ public class McpProtocolHandler
         ToolCallResult errorResult = ToolCallResult.errorText(JsonParser.parseString(result));
         return GsonProvider.toJson(JsonRpcResponse.success(requestId, errorResult));
     }
+
+    /**
+     * Delivers a JSON tool payload in BOTH channels: the whole payload as text, for a client that
+     * reads only {@code content[0].text}, and the same payload as {@code structuredContent}, for a
+     * client that enforces the declared {@code outputSchema}. A {@code ToolResult.error} payload
+     * keeps {@code isError:true}, so the text-reading client still sees a failure as one.
+     *
+     * @param result the tool's JSON payload
+     * @param requestId the JSON-RPC request id to echo
+     * @return the serialized JSON-RPC response
+     */
+    private String buildPlainTextJsonResponse(String result, Object requestId)
+    {
+        ToolCallResult payload =
+            ToolCallResult.textWithStructured(JsonParser.parseString(result), isJsonErrorPayload(result));
+        return GsonProvider.toJson(JsonRpcResponse.success(requestId, payload));
+    }
     
+    /** Which channels a JSON tool's payload is delivered in. See {@link #jsonDeliveryFor}. */
+    enum JsonDelivery
+    {
+        /** structuredContent carries the payload; the text channel gets a bounded digest. */
+        STRUCTURED,
+        /** Both channels carry the whole payload (plain-text mode). */
+        TEXT_PAYLOAD_AND_STRUCTURED,
+        /** Only the text channel; the client refused structuredContent. */
+        TEXT_ONLY
+    }
+
+    /**
+     * How a JSON tool's payload is delivered for this call.
+     * <p>
+     * Two responses have to agree: {@code tools/call} fills {@code structuredContent}, and
+     * {@code tools/list} advertises an {@code outputSchema} declaring its shape. MCP binds them -
+     * a tool that declares an output schema must return structured content - and a client that
+     * enforces the binding throws the whole call away, which is what Cursor's
+     * {@code -32600 "has an output schema but did not return structured content"} is (#574).
+     * </p>
+     * <p>
+     * So exactly ONE input may withhold structuredContent, and it is the client's own explicit
+     * {@code experimental.structuredContent:false}: it is declared at initialize and cannot change
+     * for the life of that session, so a schema advertised to that client is never contradicted by
+     * a later call. {@link #advertisesOutputSchema} reads the same input, and nothing else.
+     * </p>
+     * <p>
+     * Plain-text mode is deliberately NOT such an input, though it used to be. It exists because
+     * some clients read only {@code content[0].text} (#39), so it moves the payload INTO the text
+     * channel - it has no reason to take it out of the structured one, and doing so tied the
+     * advertised schema to a preference the user can flip mid-session, which no notification can
+     * make safe for a client that has already been given the list.
+     * </p>
+     *
+     * @param plainTextMode whether Cursor-compatible plain-text mode is enabled
+     * @param capabilities the capabilities the client declared, never {@code null}
+     * @return the delivery for this call
+     */
+    static JsonDelivery jsonDeliveryFor(boolean plainTextMode, ClientCapabilities capabilities)
+    {
+        if (!capabilities.allowsStructuredContent())
+        {
+            return JsonDelivery.TEXT_ONLY;
+        }
+        return plainTextMode ? JsonDelivery.TEXT_PAYLOAD_AND_STRUCTURED : JsonDelivery.STRUCTURED;
+    }
+
+    /**
+     * Whether {@code tools/list} may advertise a JSON tool's {@code outputSchema} to this client.
+     * <p>
+     * True exactly when {@link #jsonDeliveryFor} will produce structuredContent, for every value of
+     * the other input - which is what makes the promise keepable. A test pins that equivalence.
+     * </p>
+     *
+     * @param capabilities the capabilities the client declared, never {@code null}
+     * @return {@code true} when the schema may be advertised
+     */
+    static boolean advertisesOutputSchema(ClientCapabilities capabilities)
+    {
+        return capabilities.allowsStructuredContent();
+    }
+
+    /**
+     * Reads the Cursor-compatibility plain-text preference.
+     * <p>
+     * {@code Activator.getDefault()} can be null during a shutdown race; in that case this falls
+     * back to the safe default (structured content, not plain text).
+     * </p>
+     *
+     * @return {@code true} when plain-text mode is enabled
+     */
+    private static boolean isPlainTextMode()
+    {
+        return Activator.getDefault() != null
+            && Activator.getDefault().getPreferenceStore().getBoolean(PreferenceConstants.PREF_PLAIN_TEXT_MODE);
+    }
+
     /**
      * Emits the single per-call completion log line. Routed to WARNING when the
      * outcome is an error or the call was slow (so an operator sees it without
@@ -821,7 +995,7 @@ public class McpProtocolHandler
     /**
      * Adds user signal to a JSON result string using Gson for proper JSON handling.
      */
-    private String addUserSignalToJson(String jsonResult, UserSignal signal)
+    String addUserSignalToJson(String jsonResult, UserSignal signal)
     {
         try
         {
@@ -834,12 +1008,12 @@ public class McpProtocolHandler
                 // Create userSignal object
                 com.google.gson.JsonObject signalObject = new com.google.gson.JsonObject();
                 signalObject.addProperty("type", signal.getType().name());
-                signalObject.addProperty("message", signal.getMessage());
+                signalObject.addProperty("message", boundedUserSignalMessage(signal.getMessage()));
                 
                 // Add to result
                 jsonObject.add("userSignal", signalObject);
                 
-                return new com.google.gson.Gson().toJson(jsonObject);
+                return GsonProvider.toJson(jsonObject);
             }
         }
         catch (Exception e)
@@ -847,6 +1021,24 @@ public class McpProtocolHandler
             Activator.logError("Failed to add user signal to JSON", e);
         }
         return jsonResult;
+    }
+
+    static String addUserSignalToMarkdown(String markdown, UserSignal signal)
+    {
+        return markdown + "\n\n---\n**USER SIGNAL:** " //$NON-NLS-1$
+            + boundedUserSignalMessage(signal.getMessage());
+    }
+
+    private static String boundedUserSignalMessage(String message)
+    {
+        if (message == null || message.length() <= MAX_USER_SIGNAL_MESSAGE_CHARS)
+        {
+            return message;
+        }
+        int end = DcsXmlCodec.safeEndAtOrBefore(message, 0,
+            MAX_USER_SIGNAL_MESSAGE_CHARS - USER_SIGNAL_ELLIPSIS.length());
+        return message.substring(0, end)
+            + USER_SIGNAL_ELLIPSIS;
     }
     
     /**
@@ -914,10 +1106,15 @@ public class McpProtocolHandler
      * malformed (non-object) capabilities value yields {@link ClientCapabilities#ABSENT}
      * so the permissive default behaviour is preserved.
      *
+     * <p>Public and static because the HTTP transport parses the same initialize request to
+     * store the capabilities on the SESSION it is about to issue: reading them back off this
+     * handler afterwards would race a second client's initialize for the one slot, which is
+     * the very confusion per-session capabilities exist to end.</p>
+     *
      * @param request the parsed initialize request (may be {@code null})
      * @return the parsed capabilities, never {@code null}
      */
-    private ClientCapabilities parseClientCapabilities(JsonRpcRequest request)
+    public static ClientCapabilities parseClientCapabilities(JsonRpcRequest request)
     {
         Map<String, Object> params = request != null ? request.getParams() : null;
         if (params == null)
@@ -932,6 +1129,23 @@ public class McpProtocolHandler
         try
         {
             JsonElement tree = GsonProvider.get().toJsonTree(capabilities);
+            // A parsed capabilities object is RETAINED - by the server-scoped slot and, since
+            // sessions exist, by every open session - so its size is a per-session memory cost
+            // paid on a client's word. A real capabilities object is a few hundred bytes; this
+            // ceiling is orders of magnitude above anything a client legitimately declares and
+            // far below what a caller could otherwise pin (the whole request-body allowance,
+            // times the session cap). Over it, only the flags this server consults are kept.
+            int declaredSize = tree.toString().length();
+            if (declaredSize > MAX_RETAINED_CAPABILITIES_CHARS)
+            {
+                Activator.logInfo("Client declared a " + declaredSize //$NON-NLS-1$
+                    + "-character capabilities object, over the " + MAX_RETAINED_CAPABILITIES_CHARS //$NON-NLS-1$
+                    + "-character limit the server retains; keeping only the flags it consults."); //$NON-NLS-1$
+                // NOT the permissive default: the ceiling bounds what is RETAINED, and dropping
+                // the object outright would also discard an explicit opt-out the client sent
+                // inside it - handing that client the very structuredContent it refused.
+                return ClientCapabilities.distill(tree);
+            }
             return ClientCapabilities.from(tree);
         }
         catch (RuntimeException e)
@@ -945,10 +1159,19 @@ public class McpProtocolHandler
 
     /**
      * Builds tools/list response dynamically from registry.
+     *
+     * @param requestId the JSON-RPC request id to echo
+     * @param capabilities the calling client's declared capabilities, consulted for the
+     *        outputSchema/structuredContent agreement
+     * @return the serialized JSON-RPC response
      */
-    private String buildToolsListResponse(Object requestId)
+    private String buildToolsListResponse(Object requestId, ClientCapabilities capabilities)
     {
         ToolsListResult result = new ToolsListResult();
+        // Whether this client's tools/call will actually carry structuredContent. It depends only
+        // on what the client declared at initialize, which cannot change under it - see
+        // jsonDeliveryFor for why nothing mutable is allowed to reach this decision.
+        boolean structured = advertisesOutputSchema(capabilities);
 
         for (IMcpTool tool : toolRegistry.getVisibleTools())
         {
@@ -967,7 +1190,10 @@ public class McpProtocolHandler
             // return content (not structured data) and leave outputSchema null, in
             // which case the shared Gson omits the field entirely. The shape goes over
             // the wire but its prose does not — see OutputSchemaCompactor for why.
-            String outputSchemaJson = tool.getOutputSchema();
+            // ... and it is advertised only to a client whose calls will honour it: one that
+            // refused structuredContent gets the payload as text, and a schema promising
+            // otherwise makes an enforcing client discard the whole result (#574).
+            String outputSchemaJson = structured ? tool.getOutputSchema() : null;
             JsonElement outputSchema = outputSchemaJson != null
                 ? OutputSchemaCompactor.compact(JsonParser.parseString(outputSchemaJson))
                 : null;

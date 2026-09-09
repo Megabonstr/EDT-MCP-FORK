@@ -7,6 +7,7 @@
 package com.ditrix.edt.mcp.server.tools.impl;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 import org.eclipse.jface.preference.IPreferenceStore;
@@ -19,6 +20,10 @@ import com.ditrix.edt.mcp.server.protocol.McpConstants;
 import com.ditrix.edt.mcp.server.protocol.ToolResult;
 import com.ditrix.edt.mcp.server.tools.IMcpTool;
 import com.ditrix.edt.mcp.server.tools.McpToolRegistry;
+import com.ditrix.edt.mcp.server.transport.HttpTransport;
+import com.ditrix.edt.mcp.server.utils.CheckDescriptionLoader;
+import com.ditrix.edt.mcp.server.utils.NativeRenderModeProbe;
+import com.ditrix.edt.mcp.server.utils.NativeRenderModeProbe.NativeRenderMode;
 
 /**
  * Self-diagnosis tool: returns the running MCP server's introspection snapshot
@@ -27,7 +32,7 @@ import com.ditrix.edt.mcp.server.tools.McpToolRegistry;
  * <p>
  * Reports: listening port, MCP protocol version, plugin and EDT version, the
  * enabled/total tool counts, the {@code plainTextMode} and {@code checksFolder}
- * preference flags, the two form-render JVM flags
+ * preference flags, the startup, requested and runtime-forced states of the two form-render modes
  * ({@code -DnativeFormBufferedLayoutRender} / {@code -DnativeFormLayoutRender}),
  * and whether authentication is enabled.
  * <p>
@@ -95,7 +100,11 @@ public class GetServerStatusTool implements IMcpTool
             .booleanProperty("plainTextMode", "Whether JSON responses are forced to plain text") //$NON-NLS-1$ //$NON-NLS-2$
             .booleanProperty("checksFolderConfigured", "Whether a checks folder path is configured") //$NON-NLS-1$ //$NON-NLS-2$
             .booleanProperty("authEnabled", "Whether bearer-token authentication is enabled") //$NON-NLS-1$ //$NON-NLS-2$
-            .objectProperty("formRenderFlags", "Form-render JVM flag states keyed by flag name") //$NON-NLS-1$ //$NON-NLS-2$
+            .objectProperty("formRenderFlags", //$NON-NLS-1$
+                "atStartup is the mode when this plugin activated; requested is the current " //$NON-NLS-1$
+                    + "system property; forcedAtRuntime marks a later live-mode change, which " //$NON-NLS-1$
+                    + "reaches the renderer only if it preceded EDT's layout-service init - not " //$NON-NLS-1$
+                    + "observable from here, so none of the three states the effective mode") //$NON-NLS-1$
             .build();
     }
 
@@ -146,26 +155,34 @@ public class GetServerStatusTool implements IMcpTool
                 {
                     plainTextMode = store.getBoolean(PreferenceConstants.PREF_PLAIN_TEXT_MODE);
 
-                    // Only whether a checks folder is configured, never the path.
-                    String checksFolder = store.getString(PreferenceConstants.PREF_CHECKS_FOLDER);
-                    checksFolderConfigured = checksFolder != null && !checksFolder.trim().isEmpty();
+                    // Only whether a checks folder is configured, never the path. Since #31 the
+                    // descriptions SHIP with the plugin, so this reports an OVERRIDE being in
+                    // play - not whether get_check_description works. Read through the loader so
+                    // "configured" means here exactly what it means where it is acted on.
+                    checksFolderConfigured = CheckDescriptionLoader.hasOverrideFolder();
 
-                    // Only whether auth is on, never the token value.
+                    // Only whether auth is on, never the token value - and "on" means what the
+                    // authorizer means by it, so a preference of blanks reports auth OFF here
+                    // instead of promising a check that HttpTransport does not perform.
                     String authToken = store.getString(PreferenceConstants.PREF_AUTH_TOKEN);
-                    authEnabled = authToken != null && !authToken.isEmpty();
+                    authEnabled = !HttpTransport.normalizeToken(authToken).isEmpty();
                 }
             }
             result.put("plainTextMode", plainTextMode); //$NON-NLS-1$
             result.put("checksFolderConfigured", checksFolderConfigured); //$NON-NLS-1$
             result.put("authEnabled", authEnabled); //$NON-NLS-1$
 
-            // Form-render JVM flags (System properties), the diagnostic for a
-            // blank get_form_screenshot / get_form_layout_snapshot.
+            // EDT-startup render modes, current live modes and raw requested System properties:
+            // the diagnostic for a blank get_form_screenshot / get_form_layout_snapshot.
             Map<String, Object> formRenderFlags = new LinkedHashMap<>();
-            formRenderFlags.put(FLAG_BUFFERED_LAYOUT_RENDER,
-                Boolean.parseBoolean(System.getProperty(FLAG_BUFFERED_LAYOUT_RENDER)));
             formRenderFlags.put(FLAG_NATIVE_LAYOUT_RENDER,
-                Boolean.parseBoolean(System.getProperty(FLAG_NATIVE_LAYOUT_RENDER)));
+                createRenderFlagState(NativeRenderModeProbe.getStartupNativeRenderMode(),
+                    NativeRenderModeProbe.getNativeRenderMode(),
+                    System.getProperty(FLAG_NATIVE_LAYOUT_RENDER)));
+            formRenderFlags.put(FLAG_BUFFERED_LAYOUT_RENDER,
+                createRenderFlagState(NativeRenderModeProbe.getStartupBufferedRenderMode(),
+                    NativeRenderModeProbe.getBufferedRenderMode(),
+                    System.getProperty(FLAG_BUFFERED_LAYOUT_RENDER)));
             result.put("formRenderFlags", formRenderFlags); //$NON-NLS-1$
 
             return result.toJson();
@@ -175,5 +192,36 @@ public class GetServerStatusTool implements IMcpTool
             Activator.logError("Error in get_server_status", e); //$NON-NLS-1$
             return ToolResult.error(e.getMessage()).toJson();
         }
+    }
+
+    /**
+     * Builds one render-flag state: the mode at plugin activation, the raw requested system
+     * property, and whether the live mode has since been forced away from it.
+     *
+     * <p>Deliberately NOT called "effective". EDT binds buffered render ONCE: {@code
+     * HippoLayoutService.INSTANCE} is a static final singleton whose constructor creates its
+     * {@code offscreenHandler} if and only if {@code NativeRenderService.isBufferedRender()} held
+     * at that moment, and every later render branches on that field rather than re-reading the
+     * flag. So a runtime force reaches the renderer only when it precedes that class
+     * initialisation - and this tool cannot find out which happened, because reading the
+     * singleton to ask would itself initialise the class and decide the answer. Reporting the
+     * two states we can actually observe, plus the fact that a force happened, is the whole of
+     * what is provable here.</p>
+     */
+    private static Map<String, Object> createRenderFlagState(NativeRenderMode startupMode,
+        NativeRenderMode liveMode, String requested)
+    {
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("atStartup", startupMode.name().toLowerCase(Locale.ROOT)); //$NON-NLS-1$
+        if (requested != null)
+        {
+            state.put("requested", requested); //$NON-NLS-1$
+        }
+        if (startupMode != NativeRenderMode.UNKNOWN && liveMode != NativeRenderMode.UNKNOWN
+            && startupMode != liveMode)
+        {
+            state.put("forcedAtRuntime", true); //$NON-NLS-1$
+        }
+        return state;
     }
 }

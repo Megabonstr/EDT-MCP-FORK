@@ -1,0 +1,96 @@
+name: Doctor NSI custom plugin build
+
+on:
+  push:
+    branches:
+      - feature/doctor-nsi-custom-tools-upstream-2026-09-08
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout custom branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: feature/doctor-nsi-custom-tools-upstream-2026-09-08
+
+      - name: Verify integration surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'catalogue.add(new CodeReviewTool())' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/BuiltInToolRegistrar.java
+          grep -q 'catalogue.add(new ValidateFormModelTool())' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/BuiltInToolRegistrar.java
+          grep -q 'compare_configurations' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
+          grep -q 'code_review' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
+          grep -q 'validate_form_model' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
+          BG_TEST='mcp/tests/com.ditrix.edt.mcp.server.tests/src/com/ditrix/edt/mcp/server/utils/BackgroundJobsTest.java'
+          grep -q 'testWorkArrivingAfterTheDeadlineIsRefusedTheCommit' "$BG_TEST"
+          grep -q 'deadlinePublished' "$BG_TEST"
+          grep -q 'testExclusiveOwnerAdmissionSurvivesIndependentCallers' "$BG_TEST"
+          python3 - <<'PY'
+          import json
+          data=json.load(open('tests/e2e/tools_list.golden.json', encoding='utf-8'))
+          names={item.get('name') for item in data}
+          required={'code_review','validate_form_model','compare_configurations','get_comparison_node','merge_rules'}
+          missing=required-names
+          if missing:
+              raise SystemExit(f'missing tools in golden: {sorted(missing)}')
+          PY
+          git diff --check
+
+      - name: Validate business-project skills
+        run: python3 docs/validate_agent_skills.py
+
+      - name: E2E runner contract tests
+        run: python3 -m unittest discover -s tests/e2e/runner_tests -p 'test_*.py' -v
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Cache Tycho P2 repositories
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.m2/repository/.cache/tycho
+            ~/.m2/repository/p2
+          key: ${{ runner.os }}-tycho-p2-${{ hashFiles('**/*.target') }}
+          restore-keys: |
+            ${{ runner.os }}-tycho-p2-
+
+      - name: Maven build and tests
+        working-directory: mcp
+        env:
+          MAVEN_OPTS: -Xmx2g -XX:+UseParallelGC
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/mvn-retry.sh" clean verify --batch-mode --no-transfer-progress -T 1C
+
+      - name: Extract version and build evidence
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep -oP 'Bundle-Version:\s*\K[\d.]+' mcp/bundles/com.ditrix.edt.mcp.server/META-INF/MANIFEST.MF)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          git rev-parse HEAD | tee BUILD_COMMIT.txt
+          printf 'upstream_base=%s\n' 'c27258779ed8c727e5ab9949e5bb2f7aadff5982' >> BUILD_COMMIT.txt
+          printf 'custom_source=%s\n' '8125e7f7e28f21718ea07c597aed41e918f7aa96' >> BUILD_COMMIT.txt
+          printf 'ported_commit=%s\n' 'd6a222ad3e726b2fd78e27ad12e376a18b4b7a38' >> BUILD_COMMIT.txt
+          printf 'bundle_version=%s\n' "$VERSION" >> BUILD_COMMIT.txt
+
+      - name: Upload update site
+        uses: actions/upload-artifact@v7
+        with:
+          name: MCP-EDT-DoctorNSI.v${{ steps.version.outputs.version }}.${{ github.run_id }}
+          path: |
+            mcp/repositories/com.ditrix.edt.mcp.server.repository/target/repository/
+            BUILD_COMMIT.txt
+          if-no-files-found: error
+          retention-days: 30

@@ -54,6 +54,8 @@ public final class Toolsets
     public static final String TRANSLATION = "translation"; //$NON-NLS-1$
     /** Project operations: build/validate/update DB, export/import, problems. */
     public static final String PROJECT = "project"; //$NON-NLS-1$
+    /** Reading a three-way configuration comparison and its merge-rules file. */
+    public static final String COMPARISON = "comparison"; //$NON-NLS-1$
 
     /** Raw git command tool (its own group; disabled by default via PreferenceConstants). */
     public static final String GIT = "git"; //$NON-NLS-1$
@@ -110,13 +112,18 @@ public final class Toolsets
         define(PROFILING, "Profiling",
             "Performance profiling: start/stop a measurement and read the results."); //$NON-NLS-1$
         define(FORMS, "Forms",
-            "Form and template rendering: form layout snapshot, form screenshot, template screenshot."); //$NON-NLS-1$
+            "Managed-form validation, layout snapshot and screenshots."); //$NON-NLS-1$
         define(TAGS, "Tags",
             "Tag-based organization: list tags and find objects by tag."); //$NON-NLS-1$
         define(TRANSLATION, "Translation",
             "Configuration translation via LanguageTool: extract, translate, project info."); //$NON-NLS-1$
         define(PROJECT, "Project",
             "Project operations: clean/revalidate, update DB, export/import XML, problems and markers, docs."); //$NON-NLS-1$
+        define(COMPARISON, "Comparison",
+            "Read a three-way configuration comparison: start one against two git revisions, " //$NON-NLS-1$
+                + "expand a node's differences, and read or author the merge-rules file EDT " //$NON-NLS-1$
+                + "re-applies. Nothing is ever merged - running a merge stays a human action " //$NON-NLS-1$
+                + "in EDT's comparison window."); //$NON-NLS-1$
         define(GIT, "Git",
             "Run raw git commands (status/diff/commit/push/pull/...) in a project's repository via the " //$NON-NLS-1$
             + "'git' tool. Powerful (it can push, checkout, stash); DISABLED by default - check it in the " //$NON-NLS-1$
@@ -130,7 +137,7 @@ public final class Toolsets
             "get_metadata_objects", "get_metadata_details"); //$NON-NLS-1$ //$NON-NLS-2$
 
         assign(METADATA,
-            "create_metadata", "modify_metadata", "delete_metadata", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "create_metadata", "modify_metadata", "delete_metadata", "dcs", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             "rename_metadata_object", "adopt_metadata_object", //$NON-NLS-1$ //$NON-NLS-2$
             "list_common_pictures", "export_common_picture", //$NON-NLS-1$ //$NON-NLS-2$
             "get_subsystem_content", "list_subsystems", //$NON-NLS-1$ //$NON-NLS-2$
@@ -140,10 +147,10 @@ public final class Toolsets
         assign(CODE,
             "write_module_source", "read_method_source", "get_method_call_hierarchy", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
             "get_outgoing_structures", "go_to_definition", "get_symbol_info", "find_references", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
-            "get_content_assist", "validate_query"); //$NON-NLS-1$ //$NON-NLS-2$
+            "get_content_assist", "validate_query", "code_review"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
         assign(DEBUG,
-            "debug_launch", "debug_status", "set_breakpoint", "remove_breakpoint", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+            "launch", "debug_status", "set_breakpoint", "remove_breakpoint", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             "list_breakpoints", "wait_for_break", "get_variables", "set_variable", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             "step", "resume", "evaluate_expression", "get_applications", "terminate_launch"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
 
@@ -155,7 +162,8 @@ public final class Toolsets
             "start_profiling", "stop_profiling", "get_profiling_results"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
         assign(FORMS,
-            "get_form_layout_snapshot", "get_form_screenshot", "get_template_screenshot"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "validate_form_model", "get_form_layout_snapshot", "get_form_screenshot", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+            "get_template_screenshot"); //$NON-NLS-1$
 
         assign(TAGS,
             "get_tags", "get_objects_by_tags"); //$NON-NLS-1$ //$NON-NLS-2$
@@ -172,6 +180,9 @@ public final class Toolsets
             "get_mcp_history", //$NON-NLS-1$
             "list_git_branches", "switch_git_branch", "set_branch_infobase", "create_git_branch", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
             "get_check_description", "apply_quick_fix", "get_platform_documentation"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
+
+        assign(COMPARISON,
+            "compare_configurations", "get_comparison_node", "merge_rules"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
 
         assign(GIT,
             "git"); //$NON-NLS-1$

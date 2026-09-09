@@ -64,6 +64,10 @@ public final class LaunchConfigUtils
     /** Attach to a locally spawned debug server. */
     public static final String TYPE_LOCAL_RUNTIME = "com._1c.g5.v8.dt.debug.core.LocalRuntime"; //$NON-NLS-1$
 
+    /** EDT standalone-server launch configuration type id. */
+    public static final String STANDALONE_SERVER_LAUNCH_CONFIG_TYPE_ID =
+        "com.e1c.g5.v8.dt.platform.standaloneserver.launchConfigurationType"; //$NON-NLS-1$
+
     /** All debug-launch config types understood by this plugin. */
     public static final List<String> ALL_DEBUG_CONFIG_TYPE_IDS = Collections.unmodifiableList(
         Arrays.asList(LAUNCH_CONFIG_TYPE_ID, TYPE_REMOTE_RUNTIME, TYPE_LOCAL_RUNTIME));
@@ -76,6 +80,36 @@ public final class LaunchConfigUtils
 
     /** Launch configuration attribute: startup option string passed to 1cv8c.exe via /C. */
     public static final String ATTR_STARTUP_OPTION = "com._1c.g5.v8.dt.launching.core.ATTR_STARTUP_OPTION"; //$NON-NLS-1$
+
+    /**
+     * Launch attribute: the EXTERNAL OBJECTS project holding the object to run on startup.
+     *
+     * <p>Read by EDT's {@code RuntimeClientLaunchDelegate} together with
+     * {@link #ATTR_EXTERNAL_OBJECT_NAME} and {@link #ATTR_EXTERNAL_OBJECT_TYPE}: it resolves the
+     * object in that project, has the platform BUILD its {@code .epf}/{@code .erf} dump, and
+     * passes the dump as {@code /Execute}. The source is therefore a PROJECT in the workspace,
+     * never a path to a prebuilt file - there is no launch attribute for one, and a prebuilt file
+     * would carry no sources for the debugger to map breakpoints onto.</p>
+     *
+     * <p>Only the runtime-client delegate reads these three; an Attach configuration ignores
+     * them.</p>
+     */
+    public static final String ATTR_EXTERNAL_OBJECT_PROJECT_NAME =
+        "com._1c.g5.v8.dt.debug.core.ATTR_EXTERNAL_OBJECT_PROJECT_NAME"; //$NON-NLS-1$
+
+    /** Launch attribute: name of the external object to run (see {@link #ATTR_EXTERNAL_OBJECT_PROJECT_NAME}). */
+    public static final String ATTR_EXTERNAL_OBJECT_NAME =
+        "com._1c.g5.v8.dt.debug.core.ATTR_EXTERNAL_OBJECT_NAME"; //$NON-NLS-1$
+
+    /**
+     * Launch attribute: the external object's type, as EDT's {@code ExternalObjectHelper}
+     * spells it - {@code externalObject.getClass().getName()}, i.e. the FQN of the EMF
+     * IMPLEMENTATION class ({@code ...mdclass.impl.ExternalDataProcessorImpl}), NOT the EClass
+     * name. The delegate re-resolves the object by comparing this string, so it must be produced
+     * the same way; a caller is never asked for it.
+     */
+    public static final String ATTR_EXTERNAL_OBJECT_TYPE =
+        "com._1c.g5.v8.dt.debug.core.ATTR_EXTERNAL_OBJECT_TYPE"; //$NON-NLS-1$
 
     /** Attach configs: infobase alias used by the cluster (e.g. "mr_tradev8"). */
     public static final String ATTR_DEBUG_INFOBASE_ALIAS = "com._1c.g5.v8.dt.debug.core.ATTR_DEBUG_INFOBASE_ALIAS"; //$NON-NLS-1$
@@ -359,25 +393,54 @@ public final class LaunchConfigUtils
         }
         for (String typeId : ALL_DEBUG_CONFIG_TYPE_IDS)
         {
-            ILaunchConfigurationType type = launchManager.getLaunchConfigurationType(typeId);
-            if (type == null)
+            ILaunchConfiguration config = findLaunchConfigByTypeAndName(launchManager, typeId, name);
+            if (config != null)
             {
-                continue;
+                return config;
             }
-            try
+        }
+        return null;
+    }
+
+    /**
+     * Searches one exact launch-configuration type for an exact configuration name.
+     *
+     * <p>This is deliberately separate from {@link #ALL_DEBUG_CONFIG_TYPE_IDS}: callers that only
+     * support runtime-client/Attach configurations keep their existing search domain, while a
+     * caller that needs to diagnose another known EDT type can look it up without hand-rolling the
+     * Eclipse launch-manager traversal.
+     *
+     * @param launchManager Eclipse launch manager (must not be {@code null})
+     * @param typeId exact launch-configuration type id
+     * @param name exact launch-configuration name
+     * @return the matching configuration, or {@code null}
+     */
+    public static ILaunchConfiguration findLaunchConfigByTypeAndName(ILaunchManager launchManager,
+            String typeId, String name)
+    {
+        if (launchManager == null || typeId == null || typeId.isEmpty()
+            || name == null || name.isEmpty())
+        {
+            return null;
+        }
+        ILaunchConfigurationType type = launchManager.getLaunchConfigurationType(typeId);
+        if (type == null)
+        {
+            return null;
+        }
+        try
+        {
+            for (ILaunchConfiguration config : launchManager.getLaunchConfigurations(type))
             {
-                for (ILaunchConfiguration config : launchManager.getLaunchConfigurations(type))
+                if (name.equals(config.getName()))
                 {
-                    if (name.equals(config.getName()))
-                    {
-                        return config;
-                    }
+                    return config;
                 }
             }
-            catch (CoreException e)
-            {
-                Activator.logError("Error searching launch configurations of type " + typeId, e); //$NON-NLS-1$
-            }
+        }
+        catch (CoreException e)
+        {
+            Activator.logError("Error searching launch configurations of type " + typeId, e); //$NON-NLS-1$
         }
         return null;
     }
