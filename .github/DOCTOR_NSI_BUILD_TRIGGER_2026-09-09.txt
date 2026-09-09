@@ -1,0 +1,1 @@
+Trigger clean Doctor NSI custom plugin build after upstream PR #583/#584 integration.
