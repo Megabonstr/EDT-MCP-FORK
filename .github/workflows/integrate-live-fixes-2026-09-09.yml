@@ -1,0 +1,54 @@
+name: Integrate Doctor NSI upstream live fixes
+
+on:
+  push:
+    branches:
+      - feature/doctor-nsi-custom-tools-upstream-2026-09-08
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Doctor NSI custom branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: feature/doctor-nsi-custom-tools-upstream-2026-09-08
+
+      - name: Merge pinned upstream fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          BRANCH='feature/doctor-nsi-custom-tools-upstream-2026-09-08'
+          PR583='6553f52e5a0706ce903233238b3514a38dbb6add'
+          PR584='3e42be05636cd4cb08ec18df5f1adbc9c81011bf'
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git remote add upstream https://github.com/DitriXNew/EDT-MCP.git
+          git fetch --no-tags upstream \
+            fix/581-dcs-materialized-listsettings \
+            feat/580-external-object-root
+
+          git cat-file -e "${PR583}^{commit}"
+          git cat-file -e "${PR584}^{commit}"
+
+          git merge --no-ff --no-edit "$PR583" -m 'Merge upstream PR #583: fix DCS materialized listSettings'
+          git merge --no-ff --no-edit "$PR584" -m 'Merge upstream PR #584: seed external-object project root'
+
+          git merge-base --is-ancestor "$PR583" HEAD
+          git merge-base --is-ancestor "$PR584" HEAD
+
+          grep -q 'validate_form_model' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
+          grep -q 'code_review' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
+          grep -q 'externalObject' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/impl/CreateProjectTool.java
+          grep -q 'listSettings' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/DcsModelComparison.java
+          git diff --check
+
+          git rm .github/workflows/integrate-live-fixes-2026-09-09.yml
+          git commit -m 'ci: finish Doctor NSI upstream live-fix integration'
+          git push origin HEAD:"$BRANCH"
