@@ -1,0 +1,102 @@
+name: Doctor NSI v2.16.1 custom plugin build
+
+on:
+  push:
+    branches:
+      - feature/doctor-nsi-v2.16.1-custom-tools
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout custom branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: feature/doctor-nsi-v2.16.1-custom-tools
+
+      - name: Verify release base and custom surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=9e7e029b8b70aa8c868b04a9ffe91a95b48e6909
+          git merge-base --is-ancestor "$BASE" HEAD
+          grep -q 'catalogue.add(new CodeReviewTool())' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/BuiltInToolRegistrar.java
+          grep -q 'catalogue.add(new ValidateFormModelTool())' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/BuiltInToolRegistrar.java
+          grep -q 'code_review' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
+          grep -q 'validate_form_model' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
+          git diff --check "$BASE"..HEAD
+
+      - name: Validate agent skills
+        run: python3 docs/validate_agent_skills.py
+
+      - name: E2E runner contract tests
+        run: python3 -m unittest discover -s tests/e2e/runner_tests -p 'test_*.py' -v
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+
+      - name: Cache Tycho P2 repositories
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository/.cache/tycho
+            ~/.m2/repository/p2
+          key: ${{ runner.os }}-tycho-p2-${{ hashFiles('**/*.target') }}
+          restore-keys: |
+            ${{ runner.os }}-tycho-p2-
+
+      - name: Set Doctor NSI build version
+        id: version
+        working-directory: mcp
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=2.16.1.1
+          TYCHO=$(sed -n 's|.*<tycho\.version>\(.*\)</tycho\.version>.*|\1|p' bom/pom.xml)
+          test -n "$TYCHO"
+          mvn "org.eclipse.tycho:tycho-versions-plugin:$TYCHO:set-version" \
+            -DnewVersion="$VERSION" --batch-mode --no-transfer-progress
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Maven build and tests
+        working-directory: mcp
+        env:
+          MAVEN_OPTS: -Xmx2g -XX:+UseParallelGC
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/mvn-retry.sh" clean verify --batch-mode --no-transfer-progress -T 1C
+
+      - name: Package update site and evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION='${{ steps.version.outputs.version }}'
+          printf 'branch=%s\n' 'feature/doctor-nsi-v2.16.1-custom-tools' > BUILD_COMMIT.txt
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> BUILD_COMMIT.txt
+          printf 'upstream_release=v2.16.1\n' >> BUILD_COMMIT.txt
+          printf 'upstream_release_commit=%s\n' '9e7e029b8b70aa8c868b04a9ffe91a95b48e6909' >> BUILD_COMMIT.txt
+          printf 'custom_port_source=%s\n' 'd6a222ad3e726b2fd78e27ad12e376a18b4b7a38' >> BUILD_COMMIT.txt
+          printf 'bundle_version=%s\n' "$VERSION" >> BUILD_COMMIT.txt
+          cd mcp/repositories/com.ditrix.edt.mcp.server.repository/target/repository
+          zip -qr "$GITHUB_WORKSPACE/MCP-EDT-DoctorNSI.v${VERSION}.zip" .
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "MCP-EDT-DoctorNSI.v${VERSION}.zip" | tee BUILD_SHA256.txt
+
+      - name: Upload update site
+        uses: actions/upload-artifact@v7
+        with:
+          name: MCP-EDT-DoctorNSI.v${{ steps.version.outputs.version }}.${{ github.run_id }}
+          path: |
+            MCP-EDT-DoctorNSI.v${{ steps.version.outputs.version }}.zip
+            BUILD_COMMIT.txt
+            BUILD_SHA256.txt
+          if-no-files-found: error
+          retention-days: 30
