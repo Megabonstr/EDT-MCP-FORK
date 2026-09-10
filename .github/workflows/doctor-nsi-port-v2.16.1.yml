@@ -1,0 +1,40 @@
+name: Port Doctor NSI custom tools onto v2.16.1
+
+on:
+  push:
+    branches:
+      - feature/doctor-nsi-v2.16.1-custom-tools
+    paths:
+      - .github/workflows/doctor-nsi-port-v2.16.1.yml
+
+permissions:
+  contents: write
+
+jobs:
+  port:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: feature/doctor-nsi-v2.16.1-custom-tools
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Port custom tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # The custom implementation commit contains code_review + validate_form_model,
+          # their registrar/toolset wiring, tests and guides. The two later commits restore
+          # the generated tool docs that upstream refresh had overwritten.
+          git cherry-pick d6a222ad3e726b2fd78e27ad12e376a18b4b7a38
+          git cherry-pick 1bc2f5a470b55bf409d6b1f7f8c25a34ab705919
+          git cherry-pick 25a2380815a4d324eef86619f33327f7beed95bd
+
+          # One-shot workflow: remove itself from the resulting branch.
+          git rm .github/workflows/doctor-nsi-port-v2.16.1.yml
+          git commit -m 'ci: finish Doctor NSI v2.16.1 custom-tool port'
+          git push origin HEAD:feature/doctor-nsi-v2.16.1-custom-tools
