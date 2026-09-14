@@ -1,0 +1,199 @@
+name: Doctor NSI v2.17.1 custom plugin build
+
+on:
+  push:
+    branches:
+      - feature/doctor-nsi-v2.17.1-custom-tools
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  port-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout v2.17.1 custom branch
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: feature/doctor-nsi-v2.17.1-custom-tools
+
+      - name: Port only Doctor NSI code_review surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=681718a9ba93671546e058a9e761e2e087ad4703
+          OLD_BRANCH=feature/doctor-nsi-v2.16.1-custom-tools
+          git merge-base --is-ancestor "$BASE" HEAD
+          git fetch origin "$OLD_BRANCH:refs/remotes/origin/$OLD_BRANCH" --no-tags
+
+          copy_from_old() {
+            local path="$1"
+            mkdir -p "$(dirname "$path")"
+            git show "refs/remotes/origin/$OLD_BRANCH:$path" > "$path"
+          }
+
+          copy_from_old docs/tools/code_review.md
+          copy_from_old mcp/bundles/com.ditrix.edt.mcp.server/guides/code_review.md
+          copy_from_old mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/impl/CodeReviewTool.java
+          copy_from_old mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/CodeReviewBridge.java
+          copy_from_old mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/CodeReviewBridgeException.java
+          copy_from_old mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/CodeReviewReportMapper.java
+          copy_from_old mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/BackgroundJobs.java
+          copy_from_old mcp/tests/com.ditrix.edt.mcp.server.tests/src/com/ditrix/edt/mcp/server/tools/impl/CodeReviewToolTest.java
+          copy_from_old mcp/tests/com.ditrix.edt.mcp.server.tests/src/com/ditrix/edt/mcp/server/utils/BackgroundJobsTest.java
+          copy_from_old tests/e2e/tools/test_code_review.py
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          registrar = Path('mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/BuiltInToolRegistrar.java')
+          text = registrar.read_text(encoding='utf-8')
+          if 'import com.ditrix.edt.mcp.server.tools.impl.CodeReviewTool;' not in text:
+              anchor = 'import com.ditrix.edt.mcp.server.tools.impl.CleanProjectTool;\n'
+              assert anchor in text
+              text = text.replace(anchor, anchor + 'import com.ditrix.edt.mcp.server.tools.impl.CodeReviewTool;\n', 1)
+          if 'catalogue.add(new CodeReviewTool());' not in text:
+              anchor = '        catalogue.add(new GetSymbolInfoTool());\n'
+              assert anchor in text
+              text = text.replace(anchor, anchor + '        catalogue.add(new CodeReviewTool());\n', 1)
+          registrar.write_text(text, encoding='utf-8')
+
+          toolsets = Path('mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java')
+          text = toolsets.read_text(encoding='utf-8')
+          if '"code_review"' not in text:
+              anchor = '            "get_content_assist", "validate_query"); //$NON-NLS-1$ //$NON-NLS-2$\n'
+              replacement = '            "get_content_assist", "validate_query", "code_review"); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$\n'
+              assert anchor in text
+              text = text.replace(anchor, replacement, 1)
+          toolsets.write_text(text, encoding='utf-8')
+
+          groups = Path('mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/preferences/ToolGroup.java')
+          text = groups.read_text(encoding='utf-8')
+          if '        "code_review", //$NON-NLS-1$\n' not in text:
+              anchor = '        "get_outgoing_structures", "go_to_definition", "get_symbol_info", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$\n'
+              assert anchor in text
+              text = text.replace(anchor, anchor + '        "code_review", //$NON-NLS-1$\n', 1)
+          groups.write_text(text, encoding='utf-8')
+          PY
+
+          # Upstream v2.17.1 owns validate_form_model now. Its implementation must stay untouched.
+          test -z "$(git diff "$BASE" -- mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/impl/ValidateFormModelTool.java)"
+          test -z "$(git diff "$BASE" -- mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/FormModelValidator.java)"
+
+          grep -q 'catalogue.add(new CodeReviewTool())' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/BuiltInToolRegistrar.java
+          grep -q 'catalogue.add(new ValidateFormModelTool())' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/BuiltInToolRegistrar.java
+          grep -q 'catalogue.add(new InfobaseSessionsTool())' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/BuiltInToolRegistrar.java
+          git diff --check "$BASE"
+
+          if ! git diff --quiet; then
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add docs/tools/code_review.md \
+              mcp/bundles/com.ditrix.edt.mcp.server/guides/code_review.md \
+              mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/impl/CodeReviewTool.java \
+              mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/CodeReviewBridge.java \
+              mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/CodeReviewBridgeException.java \
+              mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/CodeReviewReportMapper.java \
+              mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/BackgroundJobs.java \
+              mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/BuiltInToolRegistrar.java \
+              mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java \
+              mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/preferences/ToolGroup.java \
+              mcp/tests/com.ditrix.edt.mcp.server.tests/src/com/ditrix/edt/mcp/server/tools/impl/CodeReviewToolTest.java \
+              mcp/tests/com.ditrix.edt.mcp.server.tests/src/com/ditrix/edt/mcp/server/utils/BackgroundJobsTest.java \
+              tests/e2e/tools/test_code_review.py
+            git commit -m 'feat: port Doctor NSI code_review onto upstream v2.17.1'
+            git push origin HEAD:feature/doctor-nsi-v2.17.1-custom-tools
+          fi
+
+      - name: Verify merged source surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE=681718a9ba93671546e058a9e761e2e087ad4703
+          git diff --check "$BASE"..HEAD
+          test -f docs/tools/code_review.md
+          grep -q 'public static final String NAME = "code_review"' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/impl/CodeReviewTool.java
+          grep -q 'startExclusive' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/BackgroundJobs.java
+          grep -q '"code_review"' mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/Toolsets.java
+          # No custom fork regression of the upstream v2.17.1 form validator.
+          test -z "$(git diff "$BASE"..HEAD -- mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/tools/impl/ValidateFormModelTool.java)"
+          test -z "$(git diff "$BASE"..HEAD -- mcp/bundles/com.ditrix.edt.mcp.server/src/com/ditrix/edt/mcp/server/utils/FormModelValidator.java)"
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: maven
+
+      - name: Cache Tycho P2 repositories
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.m2/repository/.cache/tycho
+            ~/.m2/repository/p2
+          key: ${{ runner.os }}-tycho-p2-${{ hashFiles('**/*.target') }}
+          restore-keys: |
+            ${{ runner.os }}-tycho-p2-
+
+      - name: Set custom build version
+        id: version
+        working-directory: mcp
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=2.17.1.1
+          TYCHO=$(sed -n 's|.*<tycho\.version>\(.*\)</tycho\.version>.*|\1|p' bom/pom.xml)
+          test -n "$TYCHO"
+          mvn "org.eclipse.tycho:tycho-versions-plugin:$TYCHO:set-version" \
+            -DnewVersion="$VERSION" --batch-mode --no-transfer-progress
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build plugin without test suites
+        working-directory: mcp
+        env:
+          MAVEN_OPTS: -Xmx2g -XX:+UseParallelGC
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/mvn-retry.sh" clean verify -DskipTests --batch-mode --no-transfer-progress -T 1C
+
+      - name: Artifact class smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          PLUGIN_JAR=$(find mcp/repositories/com.ditrix.edt.mcp.server.repository/target/repository/plugins \
+            -maxdepth 1 -type f -name 'com.ditrix.edt.mcp.server_*.jar' | head -n 1)
+          test -n "$PLUGIN_JAR"
+          jar tf "$PLUGIN_JAR" | grep -q 'com/ditrix/edt/mcp/server/tools/impl/CodeReviewTool.class'
+          jar tf "$PLUGIN_JAR" | grep -q 'com/ditrix/edt/mcp/server/tools/impl/ValidateFormModelTool.class'
+          jar tf "$PLUGIN_JAR" | grep -q 'com/ditrix/edt/mcp/server/tools/impl/InfobaseSessionsTool.class'
+          jar tf "$PLUGIN_JAR" | grep -q 'com/ditrix/edt/mcp/server/utils/CodeReviewBridge.class'
+
+      - name: Package update site and evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION='${{ steps.version.outputs.version }}'
+          printf 'branch=%s\n' 'feature/doctor-nsi-v2.17.1-custom-tools' > BUILD_COMMIT.txt
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> BUILD_COMMIT.txt
+          printf 'upstream_release=v2.17.1\n' >> BUILD_COMMIT.txt
+          printf 'upstream_release_commit=%s\n' '681718a9ba93671546e058a9e761e2e087ad4703' >> BUILD_COMMIT.txt
+          printf 'custom_source_branch=%s\n' 'feature/doctor-nsi-v2.16.1-custom-tools' >> BUILD_COMMIT.txt
+          printf 'bundle_version=%s\n' "$VERSION" >> BUILD_COMMIT.txt
+          printf 'tests=SKIPPED_BY_REQUEST; compile/package + class smoke only\n' >> BUILD_COMMIT.txt
+          cd mcp/repositories/com.ditrix.edt.mcp.server.repository/target/repository
+          zip -qr "$GITHUB_WORKSPACE/MCP-EDT-DoctorNSI.v${VERSION}.zip" .
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "MCP-EDT-DoctorNSI.v${VERSION}.zip" | tee BUILD_SHA256.txt
+
+      - name: Upload update site
+        uses: actions/upload-artifact@v7
+        with:
+          name: MCP-EDT-DoctorNSI.v${{ steps.version.outputs.version }}.${{ github.run_id }}
+          path: |
+            MCP-EDT-DoctorNSI.v${{ steps.version.outputs.version }}.zip
+            BUILD_COMMIT.txt
+            BUILD_SHA256.txt
+          if-no-files-found: error
+          retention-days: 30
