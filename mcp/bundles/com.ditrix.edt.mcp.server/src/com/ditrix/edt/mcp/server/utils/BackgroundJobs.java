@@ -613,7 +613,25 @@ public final class BackgroundJobs implements AutoCloseable
      */
     public JobSnapshot start(String owningTool, long timeoutMs, String initialProgress, JobWork work)
     {
-        return start(owningTool, timeoutMs, Integer.MAX_VALUE, initialProgress, null, work);
+        return start(owningTool, timeoutMs, Integer.MAX_VALUE, false, initialProgress, null, work);
+    }
+
+    /**
+     * Starts a job only when the same owning tool has no running job in this registry.
+     * <p>
+     * The owner check and insertion share {@link #jobsLock}, so independently constructed tool
+     * instances cannot both pass an external check and submit duplicate work.
+     *
+     * @param owningTool MCP tool that creates and owns the job
+     * @param timeoutMs total job budget in milliseconds
+     * @param initialProgress first domain-specific progress message
+     * @param work work to execute off the caller thread
+     * @return initial snapshot, or {@code null} while the owner already has a running job
+     */
+    public JobSnapshot startExclusive(String owningTool, long timeoutMs, String initialProgress,
+        JobWork work)
+    {
+        return start(owningTool, timeoutMs, Integer.MAX_VALUE, true, initialProgress, null, work);
     }
 
     /**
@@ -629,7 +647,8 @@ public final class BackgroundJobs implements AutoCloseable
     public JobSnapshot start(String owningTool, long timeoutMs, String initialProgress,
         CancellationCapability cancellation, JobWork work)
     {
-        return start(owningTool, timeoutMs, Integer.MAX_VALUE, initialProgress, cancellation, work);
+        return start(owningTool, timeoutMs, Integer.MAX_VALUE, false, initialProgress, cancellation,
+            work);
     }
 
     /** Package-local compatibility overload for lifecycle tests; production callers name an owner. */
@@ -658,11 +677,12 @@ public final class BackgroundJobs implements AutoCloseable
     public JobSnapshot start(String owningTool, long timeoutMs, int maxRunning,
         String initialProgress, JobWork work)
     {
-        return start(owningTool, timeoutMs, maxRunning, initialProgress, null, work);
+        return start(owningTool, timeoutMs, maxRunning, false, initialProgress, null, work);
     }
 
     private JobSnapshot start(String owningTool, long timeoutMs, int maxRunning,
-        String initialProgress, CancellationCapability cancellation, JobWork work)
+        boolean exclusiveOwner, String initialProgress, CancellationCapability cancellation,
+        JobWork work)
     {
         if (owningTool == null || owningTool.isBlank())
         {
@@ -679,6 +699,10 @@ public final class BackgroundJobs implements AutoCloseable
         synchronized (jobsLock)
         {
             ensureOpen();
+            if (exclusiveOwner && findRunningRecordByOwner(owningTool) != null)
+            {
+                return null;
+            }
             // The running limit is checked FIRST, before anything is discarded: eviction makes
             // room for a job that is about to be stored, and a start rejected here stores
             // nothing. Evicting on the way to a refusal would throw away a completed job's
@@ -759,6 +783,32 @@ public final class BackgroundJobs implements AutoCloseable
             record = jobs.get(jobId);
         }
         return record != null ? record.snapshot() : null;
+    }
+
+    /** @return the current running job for an owner, or {@code null} when there is none */
+    public JobSnapshot findRunningByOwner(String owningTool)
+    {
+        synchronized (jobsLock)
+        {
+            JobRecord record = findRunningRecordByOwner(owningTool);
+            return record != null ? record.snapshot() : null;
+        }
+    }
+
+    private JobRecord findRunningRecordByOwner(String owningTool)
+    {
+        if (owningTool == null || owningTool.isBlank())
+        {
+            return null;
+        }
+        for (JobRecord record : jobs.values())
+        {
+            if (owningTool.equals(record.owningTool) && record.isRunning())
+            {
+                return record;
+            }
+        }
+        return null;
     }
 
     /**
