@@ -36,28 +36,37 @@ skills; do not broaden maintenance to the workspace or unrelated projects.
    `ready`. If the deadline expires, stop and report the unsettled project; do
    not trust the clean result or continue against an unsettled/unknown state.
 2. Resolve application identity with `get_applications` and
-   `list_configurations`. For `update_database`, review the current preview and
-   side effects with `terminateRunningClients=false`, obtain authority, execute
-   once with the reviewed value, and verify the final state. Use `true` only
-   when explicit application-wide authority covers every matching EDT-launched
-   client that may appear between preview and apply.
-3. Poll a returned job only with `get_job_status`; use `cancel_job` only under
+   `list_configurations`. Before applying `update_database`, inspect the target
+   with `infobase_sessions(action='list')`. A reachable empty list proves no
+   listed sessions; an unreachable result does not. Non-agent sessions are a
+   blocker under the default safety preflight. Terminate sessions only with
+   explicit authority for the exact target/effect and `confirm=true`; bulk
+   termination intentionally skips Designer sessions.
+3. Preview `update_database` first with `confirm=false` and review the resolved
+   target and side effects. Keep `checkInfobaseSessions=true` unless the caller
+   explicitly accepts bypassing that safety check. The apply phase may also
+   terminate an EDT-launched client when `terminateRunningClients=true` (the
+   tool default); ensure that effect is authorized, then execute once with
+   `confirm=true` and verify the final state. Do not retry blindly after an
+   uncertain/timeout result; reconcile the authoritative MCP history/current
+   state first.
+4. Poll a returned job only with `get_job_status`; use `cancel_job` only under
    its current authorization and confirmation contract. Treat a client timeout
    as an unknown result; reconcile the authoritative operation outcome under
    current help before retrying, continuing, or reporting completion.
-4. For import, confirm a caller-approved XML source plus a new project target,
+5. For import, confirm a caller-approved XML source plus a new project target,
    call `import_configuration_from_xml`, then verify the returned project exists
    and becomes usable. For export, confirm the exact project and approved output
    directory, call `export_configuration_to_xml`, then verify the reported
    destination and expected export result.
-5. Before using the current working tree, inspect actual repository status and
+6. Before using the current working tree, inspect actual repository status and
    diff through the project-approved Git route and prove it clean, free, and not
    needed for parallel work. Use `list_git_branches` only for branch/binding
    identity, then use `create_git_branch` or `switch_git_branch` as appropriate.
    A task branch must be checked out explicitly; verify the returned
    `checkedOut`/current branch before any mutation because branch creation alone
    leaves the working tree on its previous branch by default.
-6. When the active project has foreign changes or parallel work is required,
+7. When the active project has foreign changes or parallel work is required,
    do not switch it. Use a separate Git worktree through the project-approved
    Git route and resolve that checkout as a distinct EDT project before MCP
    mutation. Lack of MCP worktree support is a capability limitation, not a
@@ -66,18 +75,18 @@ skills; do not broaden maintenance to the workspace or unrelated projects.
 ## Authority rule
 
 Database/project/file deletion, update/restructure, import/export overwrite,
-credential storage, launch termination, branch switching, publication, and any
-operation affecting foreign work require explicit authority for the exact
-target and effect.
+credential storage, launch termination, session termination, branch switching,
+publication, and any operation affecting foreign work require explicit
+authority for the exact target and effect.
 
 ## Stop rule
 
 Stop on ambiguous direction or identity, unsaved/foreign state at risk,
-unreviewed destructive effects, unsupported worktree routing, or a background
-job whose final state is unknown.
+unreviewed destructive effects, unsupported worktree routing, or an operation
+whose final state is unknown.
 
 ## Completion signal
 
-Report exact targets, before/after project/application/Git state, diagnostics,
-job finality, verified import/export destination or project, and any operation
-intentionally not performed.
+Report exact targets, before/after project/application/session/Git state,
+diagnostics, operation finality, verified import/export destination or project,
+and any operation intentionally not performed.
