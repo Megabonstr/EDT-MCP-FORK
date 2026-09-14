@@ -28,20 +28,26 @@ cannot represent the change, and the user explicitly authorizes the risk.
    with `get_module_structure` and `read_method_source`.
 2. Consult the current guide, then use the narrowest supported
    `create_metadata`, `modify_metadata`, or `delete_metadata` operation.
-3. Re-read the form and verify the requested ownership, binding, data-path,
+3. After creating or modifying a form, run `validate_form_model` for that exact
+   form. It checks the current in-memory model immediately; read its findings,
+   fix material structural defects, and validate again. Do not substitute stale
+   project markers for this form-specific check.
+4. Re-read the form and verify the requested ownership, binding, data-path,
    command, and handler relationships; validate changed query text with
    `validate_query` when applicable.
-4. For a dynamic list, verify its owning form attribute, main table or custom
+5. For a dynamic list, verify its owning form attribute, main table or custom
    query, selected fields, visible item data paths, settings/filter handlers,
    and refresh/requery behavior. Validate changed query text before writing and
    ensure every visible `List.Field` path resolves afterward.
-5. Use `get_form_layout_snapshot` when layout structure matters and
+6. Use `get_form_layout_snapshot` when layout structure matters and
    `get_form_screenshot` only when rendered appearance is acceptance evidence.
    When taking a post-change screenshot, use `refresh=true`. Blank output most
    likely means EDT lacks `-DnativeFormBufferedLayoutRender=true`; report visual
    evidence as unavailable rather than treating the change as failed.
-6. Run targeted validation and an authorized runtime UI scenario only when
-   interaction behavior must be proven.
+7. Run targeted project validation and an authorized runtime UI scenario only
+   when those additional evidence layers are needed. `validate_form_model` and
+   `get_project_errors` are complementary: the former is current form structure,
+   the latter is EDT's previously computed project markers.
 
 ## Authority rule
 
@@ -56,7 +62,7 @@ visual/runtime evidence is unavailable.
 
 ## Completion signal
 
-Return the exact form target, confirmed structural/source diff, targeted
-validation, requested layout or runtime evidence, and explicit gaps. A model
-read or screenshot proves only the state it actually reports, not user
-interaction.
+Return the exact form target, confirmed structural/source diff,
+`validate_form_model` result, other targeted validation, requested layout or
+runtime evidence, and explicit gaps. A model read or screenshot proves only the
+state it actually reports, not user interaction.
