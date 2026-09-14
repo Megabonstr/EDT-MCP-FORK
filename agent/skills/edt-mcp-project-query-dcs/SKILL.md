@@ -24,30 +24,39 @@ an unsupported structured operation.
 
 1. Locate the owner with `search_in_code`, `get_module_structure`,
    `read_method_source`, or `get_metadata_details`.
-2. Read the complete owning method or dataset and validate the complete query
+2. If the task supplies an exact standard report/DCS donor, coding check, or
+   pinned DCS guide/spec section, read only those bounded handles before
+   selecting the query/settings/schema pattern. Treat external guides as
+   structural evidence; current project grain, EDT model and live validation
+   remain authoritative.
+3. Read the complete owning method or dataset and validate the complete query
    with `validate_query` in the exact project. For a DCS-owned query, use the
    tool's DCS context/mode according to current help for both pre- and
    post-change validation.
-3. Preserve business grain and cardinality. Hand an embedded BSL query mutation
+4. Preserve business grain and cardinality. Hand an embedded BSL query mutation
    to `edt-mcp-project-local-fix` and require its guarded lost-update workflow;
    use `modify_metadata` for a supported DCS mutation.
-4. Re-read the owner, validate the final query, and inspect targeted
-   `get_project_errors` when markers matter.
-5. Run an authorized report/runtime check only when rows, totals, RLS,
-   parameters, performance, or presentation are part of acceptance.
+5. Re-read the owner, validate the final query, and inspect targeted
+   `get_project_errors` when markers matter. Review material DCS/settings
+   choices against the same exact source handles that constrained the design.
+6. Run an authorized report/runtime check only when rows, totals, RLS,
+   parameters, performance, drilldown, or presentation are part of acceptance.
 
 ## Authority rule
 
 Do not broaden source/DCS changes, bypass access restrictions, execute against
-runtime data, or alter report settings beyond the authorized target.
+runtime data, or alter report settings beyond the authorized target. Reference
+material never authorizes raw `.dcs`/XML mutation.
 
 ## Stop rule
 
 Stop on ambiguous ownership, unresolved model validation, unsupported DCS
-write capability, unsafe cardinality, or missing runtime target/read authority.
+write capability, unsafe cardinality, missing runtime target/read authority, or
+a material `SOURCE_GAP` that the bounded source packet cannot resolve.
 
 ## Completion signal
 
 Return the exact owner and dataset, confirmed source/schema diff, successful
-readback and static validation, business-grain reasoning, and explicit gaps.
-Static validation never proves returned rows, totals, RLS, performance, or UI.
+readback and static validation, business-grain reasoning, exact donor/standard
+handles used for material design when applicable, and explicit gaps. Static
+validation never proves returned rows, totals, RLS, performance, or UI.

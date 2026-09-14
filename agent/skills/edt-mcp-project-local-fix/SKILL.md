@@ -24,16 +24,21 @@ code.
 
 1. Resolve and read the exact method with `read_method_source`; retain the
    returned `contentHash` for lost-update protection.
-2. Validate a changed 1C query with `validate_query` before writing when
+2. If the task supplies an exact standard/donor method, coding check, or guide
+   section, read that bounded source before choosing the correction. Reuse the
+   proven mechanism where it fits the current project seam; do not copy a large
+   donor block or broaden into a refactor merely because reference code exists.
+3. Validate a changed 1C query with `validate_query` before writing when
    applicable.
-3. Consult `get_tool_guide` for the current write contract, then apply the
+4. Consult `get_tool_guide` for the current write contract, then apply the
    smallest guarded `write_module_source` edit. Mode `replace` overwrites the
    whole module; use it only for an intentional full-module replacement, not a
    method-sized edit.
-4. Re-read the method, revalidate any final query, and run targeted
+5. Re-read the method, revalidate any final query, and run targeted
    `revalidate_objects` plus `get_project_errors` after every code write.
-5. Inspect the minimal repository diff and add only the focused test or runtime
-   probe required by acceptance.
+6. Inspect the minimal repository diff and add only the focused test or runtime
+   probe required by acceptance. Review the result against the same exact
+   source handles that materially constrained the change.
 
 ## Authority rule
 
@@ -44,11 +49,13 @@ refactors, or unrelated Git changes.
 ## Stop rule
 
 Stop before writing on target ambiguity, non-unique replacement, stale
-lost-update evidence, failed query validation, unready project state, or an
-unresolved design decision.
+lost-update evidence, failed query validation, unready project state, an
+unresolved design decision, or a material `SOURCE_GAP` that the supplied
+bounded sources cannot resolve safely.
 
 ## Completion signal
 
 Return the exact changed method, minimal diff, successful readback and targeted
-validation, focused runtime/test evidence when required, and remaining static
-versus runtime gaps.
+validation, focused runtime/test evidence when required, the exact source
+handles that constrained the implementation when applicable, and remaining
+static versus runtime gaps.
