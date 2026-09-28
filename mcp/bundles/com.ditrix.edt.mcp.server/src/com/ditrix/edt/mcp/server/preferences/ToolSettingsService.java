@@ -82,6 +82,14 @@ public final class ToolSettingsService // NOSONAR intentional singleton (Eclipse
     private static final Set<String> READ_ONLY_V12_ADDITIONS = Set.of(
         "export_configuration_to_file"); //$NON-NLS-1$
 
+    /*
+     * code_review is read-only, but Analysis Only deliberately disables the whole BSL_CODE group,
+     * including read-side BSL tools. A stored Analysis Only denylist predating code_review cannot
+     * name it, while Code Review intentionally keeps it enabled.
+     */
+    private static final Set<String> ANALYSIS_ONLY_V13_ADDITIONS = Set.of(
+        "code_review"); //$NON-NLS-1$
+
     /** Actual disabled-name additions registered for each Analysis Only migration. */
     static final Map<Integer, Set<String>> ANALYSIS_ONLY_MIGRATION_ADDITIONS_BY_VERSION = Map.ofEntries(
         Map.entry(1, STORED_PROFILE_V1_ADDITIONS),
@@ -94,7 +102,8 @@ public final class ToolSettingsService // NOSONAR intentional singleton (Eclipse
         Map.entry(9, READ_ONLY_V9_ADDITIONS),
         Map.entry(10, NO_DEBUG_V10_ADDITIONS),
         Map.entry(11, READ_ONLY_V11_ADDITIONS),
-        Map.entry(12, READ_ONLY_V12_ADDITIONS));
+        Map.entry(12, READ_ONLY_V12_ADDITIONS),
+        Map.entry(13, ANALYSIS_ONLY_V13_ADDITIONS));
 
     /** Actual disabled-name additions registered for each Code Review migration. */
     static final Map<Integer, Set<String>> CODE_REVIEW_MIGRATION_ADDITIONS_BY_VERSION = Map.ofEntries(
@@ -364,6 +373,12 @@ public final class ToolSettingsService // NOSONAR intentional singleton (Eclipse
                 // export_configuration_to_file is new and drives the Designer against an infobase.
                 changed |= migrateConfigurationFileExportIntoReadOnlyPresets(disabled);
             }
+            if (storedVersion < 13)
+            {
+                // code_review is new, read-only BSL analysis. Analysis Only disables the entire
+                // BSL_CODE group, while Code Review intentionally keeps this analysis tool enabled.
+                changed |= migrateCodeReviewIntoAnalysisOnlyPreset(disabled);
+            }
             if (changed)
             {
                 store.setValue(PreferenceConstants.PREF_DISABLED_TOOLS, serializeDisabledTools(disabled));
@@ -547,6 +562,24 @@ public final class ToolSettingsService // NOSONAR intentional singleton (Eclipse
                 || disabled.containsAll(CODE_REVIEW_RECOGNITION_SHAPE)))
         {
             return disabled.addAll(READ_ONLY_V11_ADDITIONS);
+        }
+        return false;
+    }
+
+    /**
+     * Adds code_review only to a stored Analysis Only profile.
+     * <p>
+     * The tool is read-only and therefore remains enabled in the Code Review preset. Analysis Only
+     * has a different contract: it disables the complete BSL_CODE group, including read-side BSL
+     * analysis. Containment of the frozen Analysis Only shape preserves the existing migration
+     * rule: a tightened preset is still recognized, while a user-loosened/custom profile is left
+     * untouched.
+     */
+    private static boolean migrateCodeReviewIntoAnalysisOnlyPreset(Set<String> disabled)
+    {
+        if (disabled.containsAll(ANALYSIS_ONLY_RECOGNITION_SHAPE))
+        {
+            return disabled.addAll(ANALYSIS_ONLY_V13_ADDITIONS);
         }
         return false;
     }
