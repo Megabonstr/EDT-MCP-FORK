@@ -107,7 +107,7 @@ public final class PreferenceConstants
      * 11 = stored read-only profiles gain the new {@code import_project_from_file} project importer;
      * 12 = they gain the new {@code export_configuration_to_file} infobase dump.
      */
-    public static final int TOOL_PREFS_MIGRATION_VERSION = 12;
+    public static final int TOOL_PREFS_MIGRATION_VERSION = 13;
 
     /** The raw {@code git} command tool is powerful, so it ships DISABLED by default (opt-in). */
     public static final String DEFAULT_DISABLED_TOOLS = "git,ask_workmate"; //$NON-NLS-1$

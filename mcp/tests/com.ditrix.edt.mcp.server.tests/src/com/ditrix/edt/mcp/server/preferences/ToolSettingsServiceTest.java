@@ -69,6 +69,9 @@ public class ToolSettingsServiceTest
     private static final Set<String> READ_ONLY_V12_ADDITIONS = Set.of(
         "export_configuration_to_file"); //$NON-NLS-1$
 
+    private static final Set<String> ANALYSIS_ONLY_V13_ADDITIONS = Set.of(
+        "code_review"); //$NON-NLS-1$
+
     private static final int VERSION_8_ANALYSIS_ONLY_DISABLED_COUNT = 58;
 
     private static final String VERSION_8_ANALYSIS_ONLY_DISABLED_SHA_256 =
@@ -1413,6 +1416,50 @@ public class ToolSettingsServiceTest
         assertTrue(Collections.disjoint(disabledTools(store), READ_ONLY_V9_ADDITIONS));
     }
 
+
+    @Test
+    public void testVersion13AddsCodeReviewToAStoredAnalysisOnlyPreset()
+    {
+        Set<String> beforeVersion13 = new HashSet<>(ToolPreset.ANALYSIS_ONLY.getDisabledTools());
+        beforeVersion13.removeAll(ANALYSIS_ONLY_V13_ADDITIONS);
+        PreferenceStore store = storedDisabledTools(beforeVersion13, 12);
+
+        ToolSettingsService.ensureMigratedForTest(store);
+
+        Set<String> disabled = disabledTools(store);
+        assertEquals(ToolPreset.ANALYSIS_ONLY.getDisabledTools(), disabled);
+        assertTrue(disabled.contains("code_review")); //$NON-NLS-1$
+        assertEquals(13, store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+    }
+
+    @Test
+    public void testVersion13LeavesCodeReviewEnabledInTheStoredCodeReviewPreset()
+    {
+        Set<String> beforeVersion13 = new HashSet<>(ToolPreset.CODE_REVIEW.getDisabledTools());
+        PreferenceStore store = storedDisabledTools(beforeVersion13, 12);
+
+        ToolSettingsService.ensureMigratedForTest(store);
+
+        assertEquals(beforeVersion13, disabledTools(store));
+        assertFalse(disabledTools(store).contains("code_review")); //$NON-NLS-1$
+        assertEquals(13, store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+    }
+
+    @Test
+    public void testVersion13LeavesALoosenedAnalysisOnlyProfileAlone()
+    {
+        Set<String> custom = new HashSet<>(ToolPreset.ANALYSIS_ONLY.getDisabledTools());
+        custom.removeAll(ANALYSIS_ONLY_V13_ADDITIONS);
+        custom.remove("read_module_source"); //$NON-NLS-1$
+        PreferenceStore store = storedDisabledTools(custom, 12);
+
+        ToolSettingsService.ensureMigratedForTest(store);
+
+        assertEquals(custom, disabledTools(store));
+        assertFalse(disabledTools(store).contains("code_review")); //$NON-NLS-1$
+        assertEquals(13, store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+    }
+
     @Test
     public void testVersion12AddsTheConfigurationFileExportToAStoredAnalysisOnlyPreset()
     {
@@ -1502,7 +1549,8 @@ public class ToolSettingsServiceTest
         assertEquals("version 12 must restore the current disabled set for " + preset, //$NON-NLS-1$
             preset.getDisabledTools(), disabled);
         assertEquals(preset, ToolPreset.matchPreset(disabled));
-        assertEquals(12, store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+        assertEquals(PreferenceConstants.TOOL_PREFS_MIGRATION_VERSION,
+            store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
     }
 
     private static void assertVersion9RestoresCurrentPreset(ToolPreset preset)
