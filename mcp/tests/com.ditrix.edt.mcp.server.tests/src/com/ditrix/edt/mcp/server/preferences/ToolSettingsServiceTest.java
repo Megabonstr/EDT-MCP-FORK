@@ -945,6 +945,12 @@ public class ToolSettingsServiceTest
         // Only version-unique additions are checked; shared names need direct migration tests.
         beforeMigration.removeAll(uniqueAdditions);
         PreferenceStore store = storedDisabledTools(beforeMigration, version - 1);
+        if (version >= 14)
+        {
+            // Upstream v13 records preset provenance; subsequent migrations must not infer
+            // an Analysis Only owner from a matching disabled-tool set.
+            store.setValue(PreferenceConstants.PREF_TOOL_PRESET_ID, preset.getId());
+        }
 
         ToolSettingsService.ensureMigratedForTest(store);
 
