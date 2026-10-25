@@ -185,7 +185,8 @@ public class ToolSettingsProvenanceTest
             ToolSettingsService.ensureMigratedForTest(legacy);
             assertEquals(entry.getValue(), legacy.getString(PRESET_ID));
             assertEquals(entry.getKey().getDisabledTools(), disabled(legacy));
-            assertEquals(13, legacy.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+            assertEquals(PreferenceConstants.TOOL_PREFS_MIGRATION_VERSION,
+                legacy.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
             int[] writes = {0};
             legacy.addPropertyChangeListener(event -> writes[0]++);
             ToolSettingsService.ensureMigratedForTest(legacy);

@@ -110,8 +110,9 @@ public final class PreferenceConstants
      * 11 = stored read-only profiles gain the new {@code import_project_from_file} project importer;
      * 12 = they gain the new {@code export_configuration_to_file} infobase dump;
      * 13 = record preset provenance after the legacy migrations, without adding disabled tools.
+     * 14 = Doctor NSI fork: add optional code_review to persisted Analysis Only presets.
      */
-    public static final int TOOL_PREFS_MIGRATION_VERSION = 13;
+    public static final int TOOL_PREFS_MIGRATION_VERSION = 14;
 
     /** The raw {@code git} command tool is powerful, so it ships DISABLED by default (opt-in). */
     public static final String DEFAULT_DISABLED_TOOLS = "git,ask_workmate"; //$NON-NLS-1$

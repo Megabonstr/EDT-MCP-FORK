@@ -142,7 +142,8 @@ public class ToolPresetProvenanceWriteTest
         store.setValue(PreferenceConstants.PREF_DISABLED_TOOLS,
             ToolSettingsService.serializeDisabledTools(snapshot));
         assertEquals("analysis-only", service.getPresetId());
-        assertEquals(13, store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+        assertEquals(PreferenceConstants.TOOL_PREFS_MIGRATION_VERSION,
+            store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
     }
 
     @Test

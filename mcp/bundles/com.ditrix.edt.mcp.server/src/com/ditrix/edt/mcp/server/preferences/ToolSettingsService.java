@@ -275,7 +275,9 @@ public final class ToolSettingsService // NOSONAR intentional singleton (Eclipse
      * stale names do not date a profile. Default-valued stores keep no ID. Existing IDs are never
      * overwritten; a missing ID on a store already at version 13 is custom without another guess.
      * <p>
-     * Keep v1-v12 dispatch frozen. Future preset-owed steps use {@link #storedPreset} and the
+     * Keep v1-v12 dispatch frozen. v14 only adds code_review to a recorded Analysis Only preset;
+     * an old fork-v13 store without ID is never guessed back into a preset.
+     * Future preset-owed steps use {@link #storedPreset} and the
      * {@link ToolPreset#isReadOnly()} / {@link ToolPreset#isNoDebug()} promises, independent of owner
      * edits. Universal default-off additions (like v1 and v3) still apply to every explicit list.
      * Keep each historical threshold: versions 6 and 7 were originally described as the same
@@ -388,6 +390,14 @@ public final class ToolSettingsService // NOSONAR intentional singleton (Eclipse
                 // Stale names and missing later additions cannot defeat the frozen shapes.
                 store.setValue(PreferenceConstants.PREF_TOOL_PRESET_ID,
                     recognizeStoredPreset(disabled).getId());
+            }
+            // Fork migration v14: unlike the old v13 fork, upstream v13 owns provenance.
+            // Migrate only a recorded Analysis Only selection, including user-tightened profiles.
+            // Unknown/custom or legacy fork-v13 stores without a preset ID stay untouched.
+            if (storedVersion < 14 && storedPreset(store) == ToolPreset.ANALYSIS_ONLY
+                && disabled.add("code_review")) //$NON-NLS-1$
+            {
+                store.setValue(PreferenceConstants.PREF_DISABLED_TOOLS, serializeDisabledTools(disabled));
             }
         }
         store.setValue(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION,

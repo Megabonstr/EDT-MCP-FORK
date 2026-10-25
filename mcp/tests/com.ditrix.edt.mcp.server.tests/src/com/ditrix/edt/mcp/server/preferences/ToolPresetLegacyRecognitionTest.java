@@ -76,7 +76,8 @@ public class ToolPresetLegacyRecognitionTest
         assertEquals("code-review", store.getString(PRESET_ID));
         assertFalse(disabled(store).contains("dcs"));
         assertFalse(disabled(store).contains("get_job_status"));
-        assertEquals(13, store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+        assertEquals(PreferenceConstants.TOOL_PREFS_MIGRATION_VERSION,
+            store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
     }
 
     @Test
@@ -101,7 +102,13 @@ public class ToolPresetLegacyRecognitionTest
     @Test
     public void testBareNestedShapeRecordsAnalysisOnlyBeforeCodeReview()
     {
-        assertStampWithoutSetWrite(ToolSettingsService.ANALYSIS_ONLY_RECOGNITION_SHAPE, "analysis-only");
+        Set<String> before = ToolSettingsService.ANALYSIS_ONLY_RECOGNITION_SHAPE;
+        PreferenceStore store = stored(before, 12);
+        ToolSettingsService.ensureMigratedForTest(store);
+        Set<String> expected = new HashSet<>(before);
+        expected.add("code_review"); //$NON-NLS-1$
+        assertEquals(expected, disabled(store));
+        assertEquals("analysis-only", store.getString(PRESET_ID));
     }
 
     @Test
@@ -170,7 +177,8 @@ public class ToolPresetLegacyRecognitionTest
         assertEquals(serialized, store.getString(PreferenceConstants.PREF_DISABLED_TOOLS));
         assertEquals(before, disabled(store));
         assertEquals(0, disabledWrites[0]);
-        assertEquals(13, store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+        assertEquals(PreferenceConstants.TOOL_PREFS_MIGRATION_VERSION,
+            store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
         int[] writes = {0};
         store.addPropertyChangeListener(event -> writes[0]++);
         ToolSettingsService.ensureMigratedForTest(store);

@@ -1414,6 +1414,67 @@ public class ToolSettingsServiceTest
     }
 
     @Test
+    public void testVersion14DisablesCodeReviewInStoredAnalysisOnlyPreset()
+    {
+        Set<String> previous = new HashSet<>(ToolPreset.ANALYSIS_ONLY.getDisabledTools());
+        previous.remove("code_review"); //$NON-NLS-1$
+        PreferenceStore store = storedDisabledTools(previous, 13);
+        store.setValue(PreferenceConstants.PREF_TOOL_PRESET_ID, ToolPreset.ANALYSIS_ONLY.getId());
+
+        ToolSettingsService.ensureMigratedForTest(store);
+
+        assertEquals(ToolPreset.ANALYSIS_ONLY.getDisabledTools(), disabledTools(store));
+        assertEquals(ToolPreset.ANALYSIS_ONLY.getId(),
+            store.getString(PreferenceConstants.PREF_TOOL_PRESET_ID));
+        assertEquals(PreferenceConstants.TOOL_PREFS_MIGRATION_VERSION,
+            store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+    }
+
+    @Test
+    public void testVersion14KeepsCodeReviewEnabledForStoredCodeReviewPreset()
+    {
+        Set<String> previous = new HashSet<>(ToolPreset.CODE_REVIEW.getDisabledTools());
+        PreferenceStore store = storedDisabledTools(previous, 13);
+        store.setValue(PreferenceConstants.PREF_TOOL_PRESET_ID, ToolPreset.CODE_REVIEW.getId());
+
+        ToolSettingsService.ensureMigratedForTest(store);
+
+        assertEquals(previous, disabledTools(store));
+        assertFalse(disabledTools(store).contains("code_review")); //$NON-NLS-1$
+        assertEquals(PreferenceConstants.TOOL_PREFS_MIGRATION_VERSION,
+            store.getInt(PreferenceConstants.PREF_TOOL_PREFS_MIGRATION));
+    }
+
+    @Test
+    public void testVersion14DoesNotGuessOldForkStoreWithoutPresetProvenance()
+    {
+        Set<String> previous = new HashSet<>(ToolPreset.ANALYSIS_ONLY.getDisabledTools());
+        previous.remove("code_review"); //$NON-NLS-1$
+        PreferenceStore store = storedDisabledTools(previous, 13);
+
+        ToolSettingsService.ensureMigratedForTest(store);
+
+        assertEquals(previous, disabledTools(store));
+        assertFalse(store.contains(PreferenceConstants.PREF_TOOL_PRESET_ID));
+    }
+
+    @Test
+    public void testVersion14PreservesUserEditsToRecordedAnalysisOnlyPreset()
+    {
+        Set<String> previous = new HashSet<>(ToolPreset.ANALYSIS_ONLY.getDisabledTools());
+        previous.remove("code_review"); //$NON-NLS-1$
+        previous.remove("read_module_source"); //$NON-NLS-1$
+        PreferenceStore store = storedDisabledTools(previous, 13);
+        store.setValue(PreferenceConstants.PREF_TOOL_PRESET_ID, ToolPreset.ANALYSIS_ONLY.getId());
+
+        ToolSettingsService.ensureMigratedForTest(store);
+
+        previous.add("code_review"); //$NON-NLS-1$
+        assertEquals(previous, disabledTools(store));
+        assertFalse(disabledTools(store).contains("read_module_source")); //$NON-NLS-1$
+    }
+
+    @Test
     public void testVersion12AddsTheConfigurationFileExportToAStoredAnalysisOnlyPreset()
     {
         assertVersion12RestoresCurrentPreset(ToolPreset.ANALYSIS_ONLY);
